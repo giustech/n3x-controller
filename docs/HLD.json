@@ -1,0 +1,416 @@
+{
+  "meta": {
+    "system": "n3x-controller (host de plugins, servidor gRPC e painel)",
+    "hld_owner": "Guilherme Giusti",
+    "version": "1.1",
+    "date": "2026-10-20"
+  },
+  "objective": {
+    "technical_goal": "Descrever o controller do N3X como um host de plugins sem armazenamento próprio: um processo Go que hospeda as metades de controller dos plugins e oferece servidor gRPC único (17443, TLS 1.3), painel Echo v5 + templ + htmx (17444) e métricas e health (17091). O host cuida de sessão do painel, root, autorização, contenção de falhas e ciclo de vida dos plugins; quem persiste dados é sempre o plugin, com a própria conexão de banco. Usuários de leitura, inventário e configs ficam no plugin core, em memória na v1 (ADR-001 do n3x-plugin-core); auditoria formal na v2 (ADR-002 do n3x-plugin-core). Este HLD é dono do schema do n3x.yaml do controller, do servidor gRPC (namespace n3x.plugins.<namespace>.<nome>.v1, códigos de erro, identidade do chamador e limites), do comportamento do host de plugins e do painel. Cobre FR-005, FR-008, FR-009 e FR-011 do PRD 1.5 (2026-10-20), com FR-010 adiado para a v2, e FR-006 e FR-007 só no papel de host.",
+    "problems_addressed": [
+      "O PRD deixou o armazenamento do controller em aberto; a decisão é tirar a persistência do host e deixá-la com cada plugin",
+      "O host precisa isolar os plugins (namespace gRPC, rotas, capacidades) e conter panics em telas e serviços",
+      "A meta é 500 sidecars conectados em 1 vCPU e 512 MB, com o painel em p95 < 300 ms",
+      "O login é a única rota pública e vira alvo de força bruta e de DoS de CPU por bcrypt, inclusive na rajada após um restart",
+      "O root nunca pode ficar no armazenamento, e o host precisa funcionar mesmo com o core falho ou degradado"
+    ],
+    "linked_systems": [
+      "n3x-sdk: contrato de plugin de controller e capacidades privilegiadas do core",
+      "n3x-plugin-core: login, autenticador de sessão, chave HMAC, diretório de usuários só leitura, inventário, configs e telas, em memória na v1",
+      "n3x-builder: controller-builder e n3x-plugin build geram o binário a partir do módulo host/",
+      "n3x-sidecar: cliente do servidor gRPC; formato ENC[...] compartilhado pelo pacote secret do n3x-sdk",
+      "Orquestradores Kubernetes, ECS e docker compose",
+      "Prometheus (opcional)"
+    ]
+  },
+  "architecture": {
+    "topology_overview": "Processo Go único, em instância única por ambiente e fora do caminho crítico. O repositório entrega o módulo host/ e a imagem base ghcr.io/giustech/n3x/controller (semver próprio) sem binário; o binário sai sempre do n3x-plugin build, que gera um main chamando host.Run(core.Plugin(), plugins...). Para desenvolvimento há cmd/n3x-controller-dev e go.work. Dentro do processo: servidor gRPC 17443 com interceptors (recover, log e métricas, limites, autenticação pelo core, autorização), painel 17444 com middlewares (recover, headers, sessão, CSRF, papel da rota), operação 17091 e host de plugins com ordem por dependência. Subida: valida n3x.yaml, manifesto, ENC e seções de plugin; Init e Start em ordem de dependência; abre portas; /ready. Desligamento: /ready 503, parada graciosa com 20 s e Stop em ordem inversa. Subcomandos: run, validate, hash, credential new, encrypt, keygen e dev-cert.",
+    "technologies": [
+      "Go 1.26 ou superior, sem cgo, binário estático",
+      "grpc-go e protobuf",
+      "Echo v5 (5.4.0), templ e htmx embutido",
+      "golang.org/x/crypto/bcrypt",
+      "log/slog JSON e prometheus/client_golang",
+      "Pacote secret do n3x-sdk (AES-256-GCM)",
+      "axe nos testes (sem Testcontainers: o core da v1 não tem banco)",
+      "Imagem base distroless static nonroot fixada por digest (hipótese)"
+    ],
+    "deployment": "hybrid",
+    "patterns": [
+      "Host de plugins com registro explícito e ordem por dependência",
+      "Cadeia de interceptors no gRPC e de middlewares no painel",
+      "Autorização no host antes de qualquer handler de plugin",
+      "Capacidades privilegiadas exclusivas do plugin core",
+      "Host sem estado persistente; dados duráveis pertencem aos plugins",
+      "Falha rápida na subida e degradação graciosa por plugin",
+      "Prazo em toda chamada a plugin"
+    ]
+  },
+  "components": [
+    {
+      "name": "CLI e host.Run",
+      "responsibilities": [
+        "Subcomandos run, validate, hash, credential new, encrypt, keygen e dev-cert",
+        "Sequência de subida e desligamento",
+        "Exit codes e mensagens sem segredos"
+      ],
+      "dependencies": [
+        "host/config",
+        "secret do n3x-sdk"
+      ]
+    },
+    {
+      "name": "Config (host/config)",
+      "responsibilities": [
+        "Schema v1 do n3x.yaml do controller",
+        "Decifra ENC[...]",
+        "Valida a seção de cada plugin pelo schema dele"
+      ],
+      "dependencies": [
+        "Manifesto embutido",
+        "Chave AES em arquivo"
+      ]
+    },
+    {
+      "name": "Host de plugins (host/plugins)",
+      "responsibilities": [
+        "Registro e ordem por dependência",
+        "Init, Start e Stop com prazo",
+        "Obrigatório ou opcional",
+        "Checagem de namespace gRPC e rotas",
+        "Capacidades privilegiadas só para o core",
+        "Estado por plugin: ok, degradado, falho"
+      ],
+      "dependencies": [
+        "n3x-sdk"
+      ]
+    },
+    {
+      "name": "Servidor gRPC (host/grpcsrv)",
+      "responsibilities": [
+        "TLS 1.3 em 17443",
+        "Interceptors de recover, log e métricas, limites, autenticação e autorização",
+        "Identidade do chamador no ctx",
+        "Mapeamento de erros"
+      ],
+      "dependencies": [
+        "Autenticador do plugin core"
+      ]
+    },
+    {
+      "name": "Verificador de credencial (host/credential)",
+      "responsibilities": [
+        "Confere o segredo do serviço contra secret_hash",
+        "Bloqueio por IP e serviço",
+        "No máximo 2 bcrypt simultâneos",
+        "Cache de 1 h de credenciais verificadas"
+      ],
+      "dependencies": [
+        "n3x.yaml do controller"
+      ]
+    },
+    {
+      "name": "Sessão do painel (host/session)",
+      "responsibilities": [
+        "Login e logout",
+        "Root conferido pelo arquivo",
+        "Usuários de leitura conferidos pelo core",
+        "Sessão em memória, cookie seguro, CSRF",
+        "Bloqueio de 5 tentativas por 15 min",
+        "Login, logout e bloqueio no log JSON operacional"
+      ],
+      "dependencies": [
+        "Diretório de usuários do core"
+      ]
+    },
+    {
+      "name": "Painel (host/panel)",
+      "responsibilities": [
+        "Echo v5 + templ + htmx em 17444",
+        "Layout, menu e login",
+        "Visão geral por cartões dos plugins",
+        "Banner de estado por plugin",
+        "Slots /plugins/<namespace>/<nome>/ com papel mínimo por rota",
+        "Polling de 5 s",
+        "Assets embutidos e WCAG 2.1 AA"
+      ],
+      "dependencies": [
+        "Telas e cartões dos plugins"
+      ]
+    },
+    {
+      "name": "Operação (host/ops)",
+      "responsibilities": [
+        "/metrics, /live e /ready em 17091"
+      ],
+      "dependencies": [
+        "Todos os componentes"
+      ]
+    },
+    {
+      "name": "Plugin core (n3x-plugin-core)",
+      "responsibilities": [
+        "Rota Login, autenticador de sessão e chave HMAC",
+        "Diretório de usuários só leitura (seção do core no n3x.yaml)",
+        "Inventário e configs",
+        "Telas de sidecars, configs, fluxo por serviço e lista de usuários",
+        "Cartões da visão geral"
+      ],
+      "dependencies": [
+        "Memória própria na v1 (ADR-001 do n3x-plugin-core)"
+      ]
+    }
+  ],
+  "flows": {
+    "request_flow": [
+      "gRPC: sidecar conecta em 17443 com TLS 1.3 → recover → log e métricas → limites → autenticação (Login passa direto; demais pelo autenticador do core) → autorização (papel sidecar) → handler do plugin com identidade no ctx",
+      "Login de sidecar: handler do core → verificador do host (bloqueio, cache, até 2 bcrypt, secret_hash) → core emite o token HMAC (ADR-004 e ADR-005 do n3x-plugin-core)",
+      "Painel: TLS 1.3 em 17444 → recover → request id e log → headers de segurança → sessão → CSRF em não GET → papel da rota → handler do host ou do plugin → HTML parcial (htmx) ou página inteira",
+      "Login no painel: bloqueio → root pelo arquivo ou leitura pelo core → sessão em memória → cookie; login, logout e bloqueio no log JSON operacional; com core falho ou degradado só o root entra",
+      "Subida: valida n3x.yaml, manifesto, ENC e seções → Init e Start em ordem de dependência → 17091, 17443 e 17444 → /ready",
+      "Desligamento: /ready 503 → parada graciosa de gRPC e painel → Stop dos plugins em ordem inversa"
+    ],
+    "data_flow": [
+      "n3x.yaml + chave AES → host/config → config tipada de cada plugin",
+      "Sidecar → gRPC → handler do core → memória do core → telas e cartões do core",
+      "Login, logout e bloqueio no painel → log JSON operacional do host",
+      "Usuários de leitura → seção do core no n3x.yaml → diretório só leitura; mudança exige restart",
+      "Estado de cada plugin → host → banner e métrica plugin_state",
+      "Logs JSON → stderr → coletor; métricas → 17091 → Prometheus"
+    ]
+  },
+  "data_model": {
+    "entities": [
+      "Config do controller (n3x.yaml v1: listen, tls, keys, root, services, grpc, panel, runtime, plugins)",
+      "Root: usuário e hash bcrypt, só do arquivo",
+      "Credencial de serviço: nome e um único secret_hash",
+      "Sessão do painel (memória): ID de 32 bytes, usuário, papel, criada em, último acesso, token CSRF",
+      "Contador de bloqueio (memória): usuário+IP ou IP+serviço",
+      "Credencial verificada (memória): HMAC do segredo com chave do processo, expira em 1 h",
+      "Identidade do chamador: papel root, leitura ou sidecar",
+      "Estado de plugin (memória): ok, degradado ou falho",
+      "Evento de acesso ao painel (log JSON): login, logout e bloqueio; auditoria formal na v2"
+    ],
+    "relationships": [
+      "Controller 1:1 n3x.yaml; n3x.yaml 1:N credenciais de serviço; serviço 1:1 secret_hash",
+      "Controller 1:N plugins; plugin 1:1 estado; plugin 0:1 banco próprio",
+      "Usuário 1:N sessões do painel"
+    ],
+    "source_of_truth": "n3x.yaml do controller (root, credenciais, portas, limites e config dos plugins, lido só na subida); manifesto embutido (plugins e schemas); plugin core em memória na v1 (inventário e configs; usuários de leitura vêm da seção do core no n3x.yaml); cada plugin para os próprios dados. O host não persiste nada e perde o estado em memória no restart."
+  },
+  "interfaces": [
+    {
+      "name": "Servidor gRPC (17443, n3x.plugins.<namespace>.<nome>.v1)",
+      "kind": "api",
+      "protocol": "gRPC com TLS 1.3",
+      "exposure": "internal",
+      "sla_limits": "500 sidecars em 1 vCPU e 512 MB; 1.000 conexões, 16 streams por conexão, mensagens até 4 MiB; teto de 10 s por chamada unária de plugin e 1 s por mensagem em streams; só papel sidecar na v1"
+    },
+    {
+      "name": "n3x.plugins.n3x.core.v1.Login",
+      "kind": "api",
+      "protocol": "gRPC com TLS 1.3",
+      "exposure": "internal",
+      "sla_limits": "Única rota sem sessão; 5 falhas por IP e serviço bloqueiam por 15 min; até 2 bcrypt simultâneos; cache de 1 h"
+    },
+    {
+      "name": "Painel (17444)",
+      "kind": "api",
+      "protocol": "HTTPS com TLS 1.3",
+      "exposure": "internal",
+      "sla_limits": "p95 < 300 ms com 500 sidecars; polling de 5 s; WCAG 2.1 AA"
+    },
+    {
+      "name": "Operação (17091: /metrics, /live, /ready)",
+      "kind": "api",
+      "protocol": "HTTP (Prometheus)",
+      "exposure": "internal",
+      "sla_limits": "/ready só após todos os plugins iniciarem; 503 no desligamento"
+    },
+    {
+      "name": "CLI (run, validate, hash, credential new, encrypt, keygen, dev-cert)",
+      "kind": "sdk",
+      "protocol": "Processo e stdin/stdout",
+      "exposure": "internal",
+      "sla_limits": "Segredos só pelo stdin"
+    },
+    {
+      "name": "n3x.yaml do controller + certificado TLS + chave AES",
+      "kind": "sdk",
+      "protocol": "Arquivos montados",
+      "exposure": "internal",
+      "sla_limits": "Lidos só na subida"
+    },
+    {
+      "name": "Host → plugin (registradores, identidade, estado, verificador de credencial, sessões)",
+      "kind": "sdk",
+      "protocol": "Interfaces Go",
+      "exposure": "internal",
+      "sla_limits": "Contrato no HLD do n3x-sdk"
+    }
+  ],
+  "scalability_availability": {
+    "strategies": [
+      "Instância única por ambiente, escala só vertical",
+      "Controller fora do caminho crítico do tráfego",
+      "Estado observado reconstruído pelos sidecars na reconexão",
+      "Plugin opcional com problema isolado como falho ou degradado",
+      "Limites de conexões, streams e mensagens no gRPC",
+      "Até 2 bcrypt simultâneos, fila com prazo, cache de 1 h por serviço e bloqueio por IP e serviço",
+      "Prazo em toda chamada a plugin",
+      "Polling de 5 s com HTML parcial",
+      "GOMEMLIMIT em 80% do limite do container (hipótese)",
+      "Orçamento: host 60 MB, conexões 100 MB, core 150 MB, folga 200 MB"
+    ],
+    "caching": "Só em memória no host: sessões do painel, contadores de bloqueio, cache de 1 h de credenciais verificadas (HMAC com chave do processo) e estado dos plugins",
+    "partitioning": "Nenhum; um controller por ambiente",
+    "sla_target": "99,5% de disponibilidade mensal; sidecar de volta ao painel em até 30 s (cerca de 10 s com session.hmac_key no core; sem ela, até cerca de 200 serviços); painel em p95 < 300 ms com 500 sidecars"
+  },
+  "security": {
+    "authentication": "Sidecar: login pelo core com o segredo conferido pelo host (bcrypt ≥ 12 contra um único secret_hash, cache de 1 h) e token HMAC emitido e conferido pelo core (ADR-005 do n3x-plugin-core). Painel: root pelo bcrypt do arquivo e usuários de leitura pelo diretório do core; sessão só em memória com ID de 32 bytes.",
+    "authorization": "Papéis root, leitura e sidecar aplicados pelo host antes de qualquer handler; gRPC só para sidecar na v1; painel com papel mínimo por rota e lista de usuários só para root; capacidades privilegiadas só para o core; namespaces n3x.plugins.<namespace>.<nome>.v<major> e /plugins/<namespace>/<nome>/ conferidos na subida.",
+    "secrets_management": "bcrypt para root e credenciais de serviço; ENC[v1:...] AES-256-GCM nas seções de plugin; chave AES só em arquivo montado (a chave HMAC é do core, ADR-004 do n3x-plugin-core); subcomandos hash, credential new, encrypt e keygen com segredos pelo stdin.",
+    "encryption_in_transit": "TLS 1.3 em 17443 e 17444, com certificado em arquivo; dev-cert só para desenvolvimento.",
+    "encryption_at_rest": "O host não persiste dados; segredos em repouso no n3x.yaml como bcrypt ou ENC[...]; criptografia dos bancos dos plugins definida no HLD de cada plugin.",
+    "pii_policy": "O host não guarda dados pessoais; IP e usuário dos logins do painel ficam só no log JSON operacional; a trilha formal com retenção (LGPD) fica para a v2 (ADR-002 do n3x-plugin-core). Logs sem segredos, tokens, cookies, hashes ou corpos."
+  },
+  "observability": {
+    "logs": "JSON em stderr com ts, level, component (host, grpc, panel, plugin), plugin_id, caller e request_id; stack de panic amostrado em 1 por segundo por plugin; nunca segredos, tokens, cookies, hashes ou corpos.",
+    "metrics": [
+      "n3x_controller_grpc_calls_total{method,code}",
+      "n3x_controller_grpc_duration_seconds{method}",
+      "n3x_controller_grpc_connections e grpc_streams",
+      "n3x_controller_logins_total{result,service}",
+      "n3x_controller_login_blocked_total{kind}",
+      "n3x_controller_bcrypt_inflight",
+      "n3x_controller_credential_cache_hits_total",
+      "n3x_controller_panel_requests_total{route,status}",
+      "n3x_controller_panel_duration_seconds{route}",
+      "n3x_controller_panel_sessions",
+      "n3x_controller_plugin_state{plugin,state}",
+      "n3x_controller_plugin_panics_total{plugin,kind}",
+      "n3x_controller_build_info{version,plugins_hash}"
+    ],
+    "tracing": "Sem tracing distribuído na v1 (ADR-009 do n3x-sdk); correlação por request_id vindo do sidecar e gerado no painel.",
+    "dashboards_alerts": [
+      "p95 do painel acima de 300 ms",
+      "Plugin em estado diferente de ok",
+      "Panics em plugin",
+      "Logins bloqueados em sequência",
+      "/ready fora por mais de 1 minuto",
+      "Painel de referência em n3x-sdk/deploy/ (hipótese)"
+    ]
+  },
+  "risks": [
+    {
+      "risk": "O plugin core concentra login, usuários e inventário",
+      "probability": "medium",
+      "impact": "Painel sem login de leitura e sem dados; root continua entrando e o tráfego não é afetado",
+      "mitigation": [
+        "TDD e testes de conformidade dedicados ao core",
+        "Core obrigatório: o controller não sobe sem ele",
+        "Root independente do core"
+      ],
+      "contingency_plan": "Rollback da imagem do controller para a versão anterior"
+    },
+    {
+      "risk": "Core degradado por teto de memória",
+      "probability": "low",
+      "impact": "Usuários de leitura não entram e novas versões de config são recusadas; heartbeats e estados seguem (ADR-009 do n3x-plugin-core)",
+      "mitigation": [
+        "Core informa degradado e o banner aparece",
+        "Descarte de histórico, eventos antigos e configs sem instância antes de degradar",
+        "Métrica n3x_n3x_core_degraded com alerta"
+      ],
+      "contingency_plan": "Reiniciar o controller ou subir memory_limit; o inventário se reconstrói pelos sidecars"
+    },
+    {
+      "risk": "Rajada de logins após restart do controller",
+      "probability": "medium",
+      "impact": "CPU saturada por bcrypt, painel lento e sidecars demorando a voltar",
+      "mitigation": [
+        "Cache de credencial verificada por serviço",
+        "Até 2 bcrypt simultâneos e fila com prazo",
+        "Jitter no novo login do sidecar",
+        "session.hmac_key configurada no core"
+      ],
+      "contingency_plan": "Escala vertical temporária do controller"
+    },
+    {
+      "risk": "Panic ou travamento em tela ou serviço de plugin",
+      "probability": "medium",
+      "impact": "Erro 500 ou INTERNAL na chamada; erro fatal do Go derruba o processo",
+      "mitigation": [
+        "Recover nos interceptors e middlewares",
+        "Prazo em toda chamada de plugin",
+        "Plugin opcional que falha na subida fica desligado"
+      ],
+      "contingency_plan": "Restart pelo orquestrador; remover o plugin da imagem e redeployar"
+    },
+    {
+      "risk": "Plugin acessa o que não deve",
+      "probability": "low",
+      "impact": "Um plugin lê dados ou tokens de outro, ou expõe rota sem autenticação",
+      "mitigation": [
+        "Checagem de namespace e rotas na subida",
+        "Capacidades privilegiadas só para o core",
+        "Autorização no host antes de qualquer handler",
+        "Análise estática no build"
+      ],
+      "contingency_plan": "Remover o plugin da imagem e redeployar"
+    },
+    {
+      "risk": "Meta de 500 sidecars em 512 MB não fecha",
+      "probability": "medium",
+      "impact": "OOM ou painel acima de 300 ms",
+      "mitigation": [
+        "Teste noturno com 500 sidecars simulados",
+        "GOMEMLIMIT e limites de conexões e streams",
+        "Polling com respostas parciais"
+      ],
+      "contingency_plan": "Rever o orçamento com base na medição ou recomendar 1 GB"
+    },
+    {
+      "risk": "Restart do controller desloga todos do painel",
+      "probability": "high",
+      "impact": "Baixo; operadores fazem login de novo",
+      "mitigation": [
+        "Risco aceito em troca do corte imediato de sessões",
+        "Volta à mesma página após o login"
+      ],
+      "contingency_plan": "Migrar para cookie assinado numa versão futura"
+    }
+  ],
+  "adrs_next_steps": {
+    "adrs": [
+      "ADR-001: Host como biblioteca, com o binário sempre gerado pelo n3x-plugin build",
+      "ADR-002: Controller sem armazenamento, cada plugin traz o próprio banco (substitui o ADR-002 do n3x-sdk)",
+      "ADR-003: Usuários de leitura e auditoria no plugin core (substituído parcialmente em 2026-10-20)",
+      "ADR-004: Verificador de credencial no host, com cache de 1 h",
+      "ADR-005: Um único hash por serviço",
+      "ADR-006: Sessão do painel só em memória",
+      "ADR-007: Servidor gRPC só para sidecars na v1",
+      "ADR-008: Painel com polling de 5 s e visão geral por cartões",
+      "ADR-009: Subcomandos do binário do controller",
+      "Do n3x-plugin-core: ADR-001, ADR-002, ADR-003, ADR-004, ADR-005 e ADR-009",
+      "Herdados do n3x-sdk: ADR-001, ADR-003, ADR-004, ADR-005, ADR-006, ADR-008 e ADR-009"
+    ],
+    "pending_decisions": [
+      "Contrato das capacidades novas do core e da API de cartões e estado: HLD do n3x-sdk",
+      "Resolvida: banco do plugin core (memória na v1, ADR-001 e ADR-009 do n3x-plugin-core)",
+      "Resolvida: emissão do token HMAC pelo core (ADR-004 e ADR-005 do n3x-plugin-core)",
+      "Resolvida: o pacote secret foi para o n3x-sdk (ADR-014 do n3x-sdk)",
+      "Imagem base do controller",
+      "Ajuste do orçamento de memória e de GOMEMLIMIT após o teste de carga"
+    ],
+    "next_steps": [
+      "Implementar host/config com schema v1, testes de tabela e fuzzing",
+      "Implementar host/plugins e host/grpcsrv com TDD, plugins falsos e bufconn",
+      "Implementar host/credential e host/session com testes de bloqueio, cache, CSRF e permissões",
+      "Montar o layout do painel com axe na CI",
+      "Criar cmd/n3x-controller-dev, dev/n3x.yaml e go.work",
+      "Escrever o simulador de 500 sidecars e medir o orçamento",
+      "Escrever o FDD/LLD do host de plugins e do servidor gRPC"
+    ]
+  }
+}
