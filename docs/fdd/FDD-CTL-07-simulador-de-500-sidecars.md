@@ -30,9 +30,9 @@ máquina dedicada n3x-perf (amd64, Linux, cgroup v2)
 
 **Suposições**
 - As FDDs 30 a 45 estão implementadas na versão medida; as telas do core (FDD 45) existem com as rotas `/plugins/n3x/core/{sidecars,configs,fluxo,usuarios}` do HLD do core (os padrões de detalhe dependem da FDD 45, contrato 6)
-- Os "MB" da tabela do HLD são lidos como MiB, porque as quatro parcelas somam 510 e o limite do container é 512 MiB (hipótese)
+- Os "MB" da tabela do HLD são lidos como MiB, porque as quatro parcelas somam 510 e o limite do container é 512 MiB (aprovado em 2026-10-22)
 - Go 1.26 respeita a cota de CPU do cgroup no `GOMAXPROCS` padrão (FDD 30), então o controller roda com `GOMAXPROCS` 1 numa cota de 1 vCPU
-- Existe um runner dedicado auto-hospedado `n3x-perf`, compartilhado com a FDD 50, sem outra carga durante a execução (hipótese de infraestrutura, P-05)
+- Existe um runner dedicado auto-hospedado `n3x-perf`, compartilhado com a FDD 50, sem outra carga durante a execução (runner dedicado confirmado pelo responsável em 2026-10-22, P-05)
 
 **Restrições**
 - Nada de Envoy, Kubernetes ou sidecar real na medição (ASSUNTO)
@@ -45,6 +45,10 @@ máquina dedicada n3x-perf (amd64, Linux, cgroup v2)
 - PRD 1.5: requisitos não funcionais de desempenho ("controller atende 500 sidecars conectados com 1 vCPU e 512 MB, painel em p95 menor que 300 ms"), de disponibilidade (volta ao painel em até 30 s, cerca de 10 s com `session.hmac_key`, até cerca de 200 serviços sem ela) e de segurança (nenhum segredo em log); FR-002, FR-005, FR-006, FR-008 e FR-016 como tráfego simulado; "Testes de carga e desempenho" (500 sidecars simulados à noite em máquina dedicada, antes de cada release, e validação exploratória do painel); critérios de aceite "controller com 500 sidecars simulados em 1 vCPU e 512 MB, painel em p95 menor que 300 ms" e "sidecar de volta ao painel em até 30 s"
 - HLD do `n3x-controller`: "Orçamento do controller", "Técnicas aplicadas", "Meta de disponibilidade", riscos "Meta de 500 sidecars em 512 MB não fecha" e "Rajada de logins após restart"; HLD do `n3x-plugin-core`: "Considerações de escalabilidade" (150 MB e 0,15 vCPU, 50 pings por segundo); HLD de plataforma: "Matriz de CI"
 - ADRs do `n3x-controller`: ADR-004 (bcrypt, fila, cache, bloqueio), ADR-006 (sessão do painel some no restart), ADR-008 (polling de 5 s); ADRs do `n3x-plugin-core`: ADR-004 (chave HMAC e rajada), ADR-005 (token), ADR-007 (proto `Core`, heartbeat de 10 s, 3 intervalos), ADR-009 (teto de 128 MiB), ADR-010 (métricas); ADRs do `n3x-sdk`: ADR-001 (instância única, escala vertical), ADR-009 (sem tracing, correlação por `request_id`), ADR-010 (metas do sistema divididas no HLD de cada repositório)
+- Decisões da clarificação (responsável, 2026-10-22):
+  - Runner dedicado e auto-hospedado `n3x-perf` (amd64, 8 núcleos físicos ou mais, 16 GiB, cgroup v2, kernel 5.19+) confirmado como requisito do marco M5
+  - Hipóteses menores aprovadas em bloco: módulo aninhado `test/load`, "MB" do HLD lidos como MiB, portão G01 a G17 e regras R1 a R8, falha só com 2 de 2, M5 = 3 noites verdes mais 1 pré-release verde, linha de base de 7 noites, issues automáticas `load-controller` e `perf-infra`, prazos das suítes, perfil `reference` e as 10 abas
+  - Consequência da decisão da CTL-05: no cenário `store-cap`, quando o core fica `degraded`, as sessões das abas de leitura (`leitura1` e `leitura2`) são cortadas e contam como relogin recusado; só as abas do root seguem, e a meta G14 (o root entra no painel) continua valendo
 - Lacuna do README fechada aqui: L-24, parte do ajuste (regra de decisão da razão do `GOMEMLIMIT` e conferência da imagem distroless sob carga); a escolha da imagem e da razão inicial foi da FDD 30
 - Pedidos atendidos: FDD 10 (parte do renderizador no p95), FDD 11 (carga do polling e da exportação), FDD 30 (P-08, razão do `GOMEMLIMIT`), FDD 31 (P-04 e I-09: calibrar `bcrypt_queue`, `bcrypt_wait` e `bcrypt_concurrency`, 50 bcrypt para 50 serviços), FDD 32 (custo da camada, P-05 do limiar de zumbis, tempo de scrape), FDD 33 (P-03: keepalive, buffers e folgas, custo da cadeia e memória por conexão), FDDs 34 e 40 (até 5 bcrypt simultâneos), FDD 35 (P-06: p95 com 10 abas, `MaxConns`, prazos e `MaxOverviewCards`), FDD 37 (gerar configs com `effconfig`), FDD 39 (p95 do `Login` e rajada sem chave), FDD 41 (razão heap e estimativa, orçamento), FDD 42 (rajada de `Register` com o espalhamento) e FDD 43 (p99 do ack, CPU e memória do core, rajada com e sem chave, p95 das telas, estado vivo, razão heap e estimativa)
 - FDDs de que depende: 30, 31, 32, 33, 34, 35, 36, 37, 39, 40, 41, 42, 43 e 45; relacionadas: 38 (cliente gRPC imitado), 46 (imagem e alertas), 47 (guia), 48 (ponta a ponta) e 50 (mesma máquina e sessão S35)
@@ -67,7 +71,7 @@ máquina dedicada n3x-perf (amd64, Linux, cgroup v2)
 ### 3. Escopo e exclusões
 
 **Incluído**
-- Módulo Go aninhado `github.com/giustech/n3x-controller/test/load` (hipótese, H-01) com o comando `n3x-load` e os pacotes internos `sim`, `fixture`, `panel`, `probe`, `scenario`, `report` e `nullsrv`
+- Módulo Go aninhado `github.com/giustech/n3x-controller/test/load` (aprovado em 2026-10-22, H-01) com o comando `n3x-load` e os pacotes internos `sim`, `fixture`, `panel`, `probe`, `scenario`, `report` e `nullsrv`
 - Simulador de N sidecars (padrão 500) em M serviços (padrão 50), cada um com conexão gRPC própria em TLS 1.3, IP de origem próprio no loopback, sessão, `Register`, stream de heartbeat, eventos com `id`, `Exit`, renovação e reação aos códigos de erro iguais às do agente (contrato 5)
 - Geração de manifestos (`artifact`, FDD 22) e configs efetivas (`effconfig`, FDD 37) válidos, com schemas reais, em três perfis de tamanho (contrato 4)
 - Credenciais de teste em lote pelo `n3x-controller credential new`, hashes do painel pelo `hash`, chave AES pelo `keygen` e `hmac_key` cifrada pelo `encrypt --plugin n3x.core`, e o `n3x.yaml` do controller do teste (contrato 3)
@@ -452,7 +456,7 @@ token: "<token v1, até 422 bytes>"  expires_at { seconds: 1792641600 }
 - Assinatura/Rota: `GET /login`, `POST /login`, `GET /`, `GET /plugins/n3x/core/sidecars`, detalhe de instância, `GET /plugins/n3x/core/configs`, `GET /plugins/n3x/core/fluxo`, `GET /plugins/n3x/core/usuarios` (root), exportação `?<tabela>.export=csv`
 - Método: GET e POST
 - Semântica de status/headers:
-  - **Operadores e abas (hipótese, H-11):** 3 navegadores com cookie próprio: `admin` com 2 abas, `leitura1` e `leitura2` com 4 cada (10 abas, a premissa da FDD 35); uma conexão HTTP/2 por navegador
+  - **Operadores e abas (aprovado em 2026-10-22, H-11):** 3 navegadores com cookie próprio: `admin` com 2 abas, `leitura1` e `leitura2` com 4 cada (10 abas, a premissa da FDD 35); uma conexão HTTP/2 por navegador
   - **Login:** `GET /login` lê `_csrf` do formulário e o cookie `n3x_login`; `POST /login` urlencoded com `user`, `password`, `_csrf`, `Origin: https://<host>` e `Sec-Fetch-Site: same-origin` (FDD 34); 303 com `n3x_session`
   - **Página inteira:** sem `HX-Request`, com `Sec-Fetch-Site: same-origin`; o cliente lê o HTML e acha os elementos relógio (`hx-get`, `hx-trigger="every Ns"`, `hx-target`, `hx-sync="this:drop"`, `hx-headers` com `N3X-Refresh`), inclusive o `#n3x-overview` da visão geral (FDDs 11 e 35)
   - **Polling:** cada relógio vira um temporizador próprio; a requisição leva `HX-Request: true`, `HX-Target: <alvo sem #>`, `HX-Current-URL` e `N3X-Refresh: 1`; com uma requisição do mesmo relógio em voo, o disparo é descartado (como o `drop` do htmx) e a latência registrada desse ciclo vai do instante planejado até a resposta seguinte (evita a omissão coordenada)
@@ -568,7 +572,7 @@ $ jq '.scenarios[] | select(.name=="restart-key") | .restart' out/report.json
 - Semântica:
   - **Meta dura:** número do PRD ou de garantia de outra FDD, sem tolerância; falha reprova a suíte
   - **Meta de orçamento:** parcela do HLD com tolerância de 10% (ruído); falha reprova e dispara a revisão do orçamento (contingência do HLD)
-  - **Ruído:** cenário com meta falhando roda de novo uma vez; só falha com 2 de 2; um cenário que passa e falha alternado por 3 noites abre a issue com o rótulo `flaky` (hipótese, H-17)
+  - **Ruído:** cenário com meta falhando roda de novo uma vez; só falha com 2 de 2; um cenário que passa e falha alternado por 3 noites abre a issue com o rótulo `flaky` (aprovado em 2026-10-22, H-17)
   - **Inconclusivo:** G17 falha, cgroup ilegível, CPU do sistema nos núcleos do simulador acima de 80% ou pressão de CPU (`/proc/pressure/cpu`, `some avg10`) acima de 10% nos núcleos do controller vinda de fora dele
 
 | Meta | Medida | Valor | Tipo | Cenários | Fonte |
@@ -631,7 +635,7 @@ exit 5
   - **`nightly`:** `schedule` às 03:30 UTC, depois do benchmark da FDD 50 no mesmo runner (`runs-on: [self-hosted, n3x-perf]`, `concurrency: n3x-perf`); `timeout-minutes: 90`; suíte `nightly`; alerta por issue
   - **`prerelease`:** antes de cada tag de release do `n3x-controller` e em `repository_dispatch` `core-release-candidate` enviado pelo release do `n3x-plugin-core` (H-19); suíte `prerelease` contra a imagem da `controller-builder` candidata; até 4 h; tag só sai com a suíte verde
   - **`explore`:** `workflow_dispatch` com entradas `suite`, `scenario`, `image`, `sidecars`, `services` e `hold_minutes` (validação exploratória do painel do PRD, até 120 min de `--hold`)
-  - **Máquina (hipótese, P-05):** amd64, pelo menos 8 núcleos físicos, SMT desligado, governador `performance`, 16 GiB de RAM, Linux com cgroup v2 e kernel 5.19 ou mais novo (`memory.peak`), Docker 24 ou mais novo, sem swap; núcleos 0 e 1 para o sistema e o Docker, 2 e 3 para o controller (cota de 1 vCPU), 4 a 7 para o simulador (`taskset`, `GOMAXPROCS=4`)
+  - **Máquina (confirmada pelo responsável em 2026-10-22, P-05):** amd64, pelo menos 8 núcleos físicos, SMT desligado, governador `performance`, 16 GiB de RAM, Linux com cgroup v2 e kernel 5.19 ou mais novo (`memory.peak`), Docker 24 ou mais novo, sem swap; núcleos 0 e 1 para o sistema e o Docker, 2 e 3 para o controller (cota de 1 vCPU), 4 a 7 para o simulador (`taskset`, `GOMAXPROCS=4`)
   - **Alertas:** `n3xci alert` da FDD 46 com os rótulos `load-controller` (falha, regressão) e `perf-infra` (inconclusivo ou infraestrutura em 2 noites); fecha depois de 3 execuções verdes da mesma chave
 
 **Exemplo de requisição** (trecho do workflow)

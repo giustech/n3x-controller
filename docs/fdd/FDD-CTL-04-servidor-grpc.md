@@ -36,7 +36,7 @@ Responsável: Guilherme Giusti
 - Nenhum plugin enxerga o token: o metadado `authorization` sai do `ctx` antes da camada do plugin
 
 **Suposições**
-- Go 1.26, sem cgo; grpc-go na versão do `go.mod` do `host/`, no mínimo 1.67 (exigência de ALPN `h2` no handshake) (hipótese, H-18)
+- Go 1.26, sem cgo; grpc-go na versão do `go.mod` do `host/`, no mínimo 1.67 (exigência de ALPN `h2` no handshake) (aprovado em 2026-10-22, H-18)
 - `PluginHost.Start` terminou sem erro antes de `grpcsrv.New` (FDD 30, contrato 11): o `Catalog` é imutável e não tem serviço repetido (FDD 32, contrato 3)
 - O core registra o serviço público `n3x.plugins.n3x.core.v1.Login` com o único método `Login` (L-11, FDD 36) e o serviço `n3x.plugins.n3x.core.v1.Core`
 - O cliente é o da FDD 38: TLS 1.3 com ALPN `h2`, keepalive de 30 s com `PermitWithoutStream`, mensagens até 4 MiB, `x-request-id` em toda chamada, `authorization` depois do login
@@ -56,11 +56,15 @@ Responsável: Guilherme Giusti
 - ADRs: ADR-007 do `n3x-controller`; ADR-004, ADR-006, ADR-009, ADR-012 e ADR-019 do `n3x-sdk`; ADR-005 e ADR-007 do `n3x-plugin-core`
 - FDDs aplicadas: 01 (`OwnsGRPCService`, `GRPCPackage`), 06 (`telemetry.ContextWithRequestID`, `NewRequestID`, `MetadataRequestID`, `NewLogHandler`), 08 (`Caller`, `ContextWithCaller`, `Identity`, `Role.Meets`, tabela de prazos), 09 (tabela pública, contrato 11 do `Authenticate`, contrato 14 da regra do IP, contrato 16 do estado do core, contrato 17 das sentinelas, `n3x_controller_auth_total`, `auth_failed`, `auth_core_unavailable`), 12 (`Host.Dial`, cadeia do kit, `hostconformance.RunCalls` e `RunCoreEnv`), 30 (`boot.Server`, `TLSConfig()`, `TrustedProxies`, `grpc.limits`, `plugin_call_timeout`, desligamento), 31 (`CallerIP`, prazo do `Verify`), 32 (`Catalog`, camada do plugin, `UnknownServiceHandler`, `Authenticate`, `ContextWithCallerIP`, harness), 36 (nomes de serviço, regra de major), 38 (keepalive, mensagens, streams, metadados)
 - Lacunas do README:
-  - **L-25 fechada aqui:** reflection e health gRPC desligados na `17443`; a saúde do controller fica só na `17091` (FDD 30) (hipótese, confirmando a do HLD, H-02)
+  - **L-25 fechada aqui:** reflection e health gRPC desligados na `17443`; a saúde do controller fica só na `17091` (FDD 30) (aprovado em 2026-10-22, confirmando a hipótese do HLD, H-02)
   - **L-02 aplicada:** IP pelo par TCP ou por `x-forwarded-for` vindo de par em `grpc.trusted_proxies`, regra do contrato 14 da FDD 09, implementada no pacote puro `host/internal/clientip` e entregue por `plugins.ContextWithCallerIP` (contrato 5)
   - **L-08 aplicada:** o teto unário do servidor é `min(prazo do cliente, runtime.plugin_call_timeout)`, imposto pela camada do plugin que esta FDD instala por último; streams sem teto total, com 1 s por mensagem processada (contrato 7)
   - **L-11 aplicada:** passagem sem sessão pelo que o core registrou em `PublicGRPC` (`Catalog.IsPublic`), nunca por nome fixo no código do servidor
   - **L-13 aplicada:** `x-request-id` no fio, `request_id` no `ctx` e nos logs
+- Decisões da clarificação (responsável, 2026-10-22):
+  - Log de chamada: toda chamada gera métrica; o log de cada chamada bem-sucedida fica em `debug` e as falhas sempre logam, amostradas (H-08); é uma exceção ao texto do PRD FR-005 ("toda chamada gera métrica e log") a registrar no WORKFLOW 3
+  - IP do chamador: `x-forwarded-for` só de par TCP em `grpc.trusted_proxies` (padrão vazio = só o par TCP); `grpc.trusted_proxies` entra no schema do HLD no WORKFLOW 3
+  - Hipóteses menores aprovadas em bloco: as 5 métricas novas e o resultado `timeout` em `auth_total`; keepalive fixo (cliente mínimo 20 s, servidor 60 s e 20 s) e handshake de 10 s; conexão excedente fechada em 1 s e teto rígido `max_connections + 64`; HTTP/2 anunciado com limite + 4; status cortado em 1 KiB; `x-request-id` validado por `^[A-Za-z0-9._-]{1,64}$`; "1 s por mensagem" lido como o tempo do handler sobre uma mensagem recebida (H-06), o que o HLD deve registrar; grpc-go no mínimo 1.67; reflection e health gRPC desligados
 - Pontos em aberto de FDDs anteriores fechados aqui: P-02 da FDD 12 (teto por mensagem de stream e `x-forwarded-for`), P-06 da FDD 31 (sem interceptor de taxa para o login), P-09 da FDD 30 (ALPN `h2` sobre o clone do `tls.Config`)
 - Pedidos atendidos:
   - FDD 32: registrar só o `Catalog`; usar o `UnknownServiceHandler` do host; `request_id`, `ContextWithCaller` e `ContextWithCallerIP` antes da camada do plugin; camada do plugin por último (é ela que aplica o prazo unário pedido pela FDD 31); retornos de `Authenticate` mapeados para códigos e para `n3x_controller_auth_total`; teto de 1 s por mensagem em stream; `Dial` no `pluginstest.Harness` (contratos 3, 4, 7 e 11)
@@ -519,7 +523,7 @@ grpc-message: sessão ausente, inválida ou expirada
 - Semântica (regra da FDD 09, com os refinos marcados, H-11):
   1. IP do par TCP (`peer.FromContext`), com IPv4 mapeado em IPv6 convertido para IPv4 e zona IPv6 descartada
   2. Par em `grpc.trusted_proxies` (`Config.TrustedProxies`, já conferido pela FDD 30): junta todos os valores de `x-forwarded-for` na ordem, separa por vírgula, tira espaços e lê da direita para a esquerda; endereço em lista confiável é pulado; o primeiro endereço válido fora da lista é o do chamador
-  3. Refinos (hipótese): entrada que não é IP (inclusive com porta ou colchetes) interrompe a leitura e vale o par; mais de 16 entradas ou mais de 1 KiB no total: o metadado é ignorado e vale o par; todas as entradas em lista confiável (nenhum endereço fora dela): vale o par, como "sem endereço válido" da FDD 09; `Forwarded` (RFC 7239) não é lido
+  3. Refinos (aprovados em 2026-10-22): entrada que não é IP (inclusive com porta ou colchetes) interrompe a leitura e vale o par; mais de 16 entradas ou mais de 1 KiB no total: o metadado é ignorado e vale o par; todas as entradas em lista confiável (nenhum endereço fora dela): vale o par, como "sem endereço válido" da FDD 09; `Forwarded` (RFC 7239) não é lido
   4. Par fora da lista, lista vazia ou metadado ausente: vale o par; `x-forwarded-for` nunca é lido de par não confiável
   5. Par sem IP: `SourceNone`; o servidor não põe a marca e `CallerIP` devolve `false` (o verificador usa o balde de IP zero, FDD 31)
   - O IP vai para o log só nos eventos de recusa (`auth_failed`, `grpc_limit_reached`, `grpc_handshake_failed`) e nunca vira rótulo de métrica
@@ -863,11 +867,11 @@ func TestConformidade(t *testing.T) {
 | `n3x_controller_grpc_connections` | gauge | | listener: conexões abertas, inclusive excedentes (HLD) |
 | `n3x_controller_grpc_streams` | gauge | | chamadas em curso, unárias e streams (HLD) |
 | `n3x_controller_auth_total` | counter | `result` (`ok`, `unauthenticated`, `missing_token`, `invalid_identity`, `core_unavailable`, `panic`, `timeout`) | autenticação (FDD 09; `timeout` novo, H-12) |
-| `n3x_controller_grpc_limit_rejections_total` | counter | `limit` (`connections`, `connections_hard`, `streams`) | listener e tap (nova, hipótese, H-16) |
-| `n3x_controller_grpc_handshake_failures_total` | counter | `reason` (`version`, `alpn`, `timeout`, `other`) | credenciais embrulhadas (nova, hipótese) |
-| `n3x_controller_grpc_stream_message_seconds` | histogram (`telemetry.DefaultBuckets`) | `method` | wrapper do teto, por mensagem processada (nova, hipótese) |
-| `n3x_controller_grpc_stream_message_timeouts_total` | counter | `method` | teto de 1 s (nova, hipótese) |
-| `n3x_controller_grpc_host_panics_total` | counter | | recover do host (nova, hipótese) |
+| `n3x_controller_grpc_limit_rejections_total` | counter | `limit` (`connections`, `connections_hard`, `streams`) | listener e tap (nova, aprovada em 2026-10-22, H-16; HLD a atualizar) |
+| `n3x_controller_grpc_handshake_failures_total` | counter | `reason` (`version`, `alpn`, `timeout`, `other`) | credenciais embrulhadas (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_grpc_stream_message_seconds` | histogram (`telemetry.DefaultBuckets`) | `method` | wrapper do teto, por mensagem processada (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_grpc_stream_message_timeouts_total` | counter | `method` | teto de 1 s (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_grpc_host_panics_total` | counter | | recover do host (nova, aprovada em 2026-10-22; HLD a atualizar) |
 | `n3x_controller_plugin_panics_total{kind="grpc"}` | counter | `plugin`, `kind` | camada do plugin (FDD 32); citada aqui porque é o efeito visível do panic no handler |
 
 - Cardinalidade: `method` limitado aos métodos do catálogo (no máximo 16 serviços por plugin, FDD 08) mais `unknown`; `code` com 17 valores; `result`, `limit` e `reason` fixos; nenhum rótulo com IP, serviço, instância, token ou `request_id`
@@ -918,7 +922,7 @@ func TestConformidade(t *testing.T) {
 | Componente | Versão mínima | Observações |
 | --- | --- | --- |
 | Go | 1.26 | `net/netip`, `context.AfterFunc`, `context.Cause` |
-| grpc-go | a do `go.mod` do `host/`, no mínimo 1.67 (hipótese) | `InTapHandle` e `stats.Handler` (experimentais no grpc-go, P-04), `keepalive`, `UnknownServiceHandler`, `MaxConcurrentStreams`, exigência de ALPN `h2` |
+| grpc-go | a do `go.mod` do `host/`, no mínimo 1.67 (aprovado em 2026-10-22) | `InTapHandle` e `stats.Handler` (experimentais no grpc-go, P-04), `keepalive`, `UnknownServiceHandler`, `MaxConcurrentStreams`, exigência de ALPN `h2` |
 | `prometheus/client_golang` | a da FDD 30 | counters, gauges e histogramas no `Deps.Registry` |
 | `google.golang.org/grpc/test/bufconn` | a do grpc-go | só no harness e nos testes |
 | `n3x-sdk` `controller/` (`ctrl`) | versão do SDK da release | `Identity`, `Caller`, `ContextWithCaller`, `Role.Meets`, `RoleSidecar`, `ErrUnauthenticated` |

@@ -32,7 +32,7 @@ Consumidores:
 - FDD 31 (CTL-02): lê `services` e `grpc.login` de `config.Config` (contrato 4)
 - FDD 32 (CTL-03): recebe o `preflight.Bundle` (plugins na ordem de subida, obrigatoriedade, módulo, manifesto bruto) e as seções cruas com o `Opener` de cada plugin; implementa `boot.PluginHost` (contrato 11)
 - FDD 33 (CTL-04): lê `listen.grpc`, `grpc.limits`, `grpc.trusted_proxies`, `runtime.plugin_call_timeout` e o `tls.Config`; implementa `boot.Server`
-- FDD 34 (CTL-05): lê `root`, `panel.session` e `panel.login`
+- FDD 34 (CTL-05): lê `root`, `panel.session`, `panel.login` e `panel.trusted_proxies`
 - FDD 35 (CTL-06): lê `listen.panel`, `panel.refresh_interval` e o `tls.Config`; implementa `boot.Server`
 - FDDs 36 a 45 (plugin core): a seção `plugins["n3x.core"]` é validada pelo `CheckHost` do core; `CoreEnv.ControllerManifest()` recebe os bytes do manifesto lidos aqui
 - FDDs 46, 47 e 51: imagem base, guia do operador e orçamento do `GOMEMLIMIT`
@@ -46,7 +46,7 @@ Consumidores:
 - `validate`, `hash`, `credential new`, `encrypt`, `keygen`, `dev-cert`, `version` e `probe` nunca abrem as portas do controller
 
 **Suposições**
-- Go 1.26 ou superior, sem cgo, binário estático (HLD); produção em `linux/amd64` e `linux/arm64`; desenvolvimento em Linux, macOS ou WSL2 (Windows nativo fica fora, porque o host usa sinais POSIX, `/proc` e cgroup) (hipótese)
+- Go 1.26 ou superior, sem cgo, binário estático (HLD); produção em `linux/amd64` e `linux/arm64`; desenvolvimento em Linux, macOS ou WSL2 (Windows nativo fica fora, porque o host usa sinais POSIX, `/proc` e cgroup; no Windows, o desenvolvimento é por WSL2 ou Docker) (confirmado pelo responsável em 2026-10-22)
 - O `n3x.yaml` do controller cabe em 1 MiB (teto prático do ConfigMap do Kubernetes), como no sidecar
 - Instância única por ambiente, escala só vertical (ADR-001 do `n3x-sdk`)
 - O plugin core mínimo `v0.1.0` da FDD 36 (passa no `CheckPrivileged` e recusa todo login) existe antes da implementação desta FDD, para o `cmd/n3x-controller-dev` subir com um core real
@@ -71,9 +71,17 @@ Consumidores:
   - **L-34 aplicada:** caminhos como `plugins["n3x.core"].users[0].password_hash` e `services["pedidos-api"].secret_hash`
   - **L-35 fechada (controller):** o binário de desenvolvimento só existe com a tag `n3x_dev` (`host.RunDev`), com manifesto sintético em memória; o binário gerado pelo builder sem seção recusa a subida com `manifest_missing` (H-20)
   - **L-39 fechada:** aceitos `$2a$`, `$2b$` e `$2y$`, custo de 12 a 16; `n3x-controller hash` emite `$2a$` (H-06)
-  - **L-40 fechada:** `/ready` responde 200 com plugin opcional `failed` e com o core `degraded`; `/ready` diz se o processo terminou a subida e não está parando (H-13)
+  - **L-40 revista (decisão do responsável, 2026-10-22; substitui H-13):** `/ready` responde 503 se algum plugin terminou a subida `failed`, inclusive opcional, e só volta a 200 com um restart. O core `degraded` e uma falha de plugin depois da subida não mudam o `/ready`. As portas `17443` e `17444` abrem mesmo assim (o painel mostra o banner do plugin `failed`)
   - **L-46 aplicada:** o `n3x.yaml` inteiro passa por `yamlconv.ToJSON`
   - **L-51 aplicada:** `runtime.plugin_limits` com os códigos e faixas das FDDs 04 e 06, padrão de memória de 64 MiB no controller
+- Decisões da clarificação (responsável, 2026-10-22):
+  - `17091` abre antes de `New` e `Start` dos plugins; o passo 7 do HLD será ajustado
+  - `/ready` fica em 503 `plugin_failed` se algum plugin, opcional ou não, terminou a subida `failed`; core `degraded` e falha depois da subida não mudam o `/ready`; o HLD ("só após todos os plugins iniciarem") já era compatível, e a L-40 original (200 com opcional `failed`) foi substituída
+  - Windows nativo fora; desenvolvimento por WSL2 ou Docker
+  - Subcomandos `probe`, `version` e `help` e as 4 métricas novas do host aprovados; HLD e ADR-009 a atualizar no WORKFLOW 3
+  - Imagem base `distroless/static-debian12` com UID 17000 confirmada
+  - Só os `.md` das FDDs são mantidos; os `.json` são ignorados
+- Ajustes de consistência do WORKFLOW 3 (2026-10-22), por decisões das FDDs 31, 33, 34 e 32: campos `grpc.login.bcrypt_queue`, `grpc.login.bcrypt_wait` e `panel.trusted_proxies` no schema; `Config.PanelTrustedProxies`; aviso `login_wait_exceeds_call_timeout`; família `login_blocked_total` em `boot.Deps`; construtores que devolvem erro, `session.NewLogin` depois do `Start` e `grpcsrv.New(deps, ph)` sem o verificador; texto do `N3X-C005`
 - Pontos em aberto de FDDs anteriores fechados aqui: P-03 da FDD 01 (parte do controller), P-03 da FDD 03 (parte do controller: `keys` opcional sem `ENC[...]`), P-04 da FDD 03 (`credential new --key`), P-03 da FDD 22 (`Image.Version` do controller e binário de desenvolvimento)
 - Pedidos atendidos: FDD 02 (`yamlconv`, opener, `PrefixErrors`, `ParseSize`, `ParseDuration`), FDD 03 (`--plugin`, `ControllerScope` por seção, sem aviso genérico de valor em claro, `secret_unexpected`, decisão sobre `credential new --key`), FDDs 04 e 06 (`runtime.plugin_limits` com `unknown_plugin`, `half_missing`, `size_format` e `range`; contrato de limites), FDD 08 (faixas dos prazos, `validate` chama `Check`, nome do evento `config_problem`), FDD 09 (`grpc.trusted_proxies` e `CheckHost` no `validate`), FDD 11 (`panel.refresh_interval` de 1 s a 60 s), FDD 15 (mesma gramática das chaves de `services` e mesmos códigos em `runtime.plugin_limits`), FDD 21 (`host.Core`, `host.Plugin`, `host.Run(...) int` sem panic na montagem; golden do `main` na CI), FDD 22 (`ReadSelf` com reserva `os.Executable()`, `Image.Version`, `plugins_hash` por `PluginsHash()`, `depends_on` com `p.DecodeManifest()`, binário sem seção) e FDD 36 (seção ausente do core vale `{}`; `encrypt --plugin n3x.core`)
 
@@ -87,7 +95,7 @@ Consumidores:
 - **Nenhum valor em mensagem.** Medida: teste de canário em que todo valor escalar do arquivo, todo texto aberto de `ENC[...]`, a chave, os hashes, as senhas do `hash` e os segredos do `credential new` viram marcadores `n3x-canary-`; 0 ocorrência em stderr, stdout (fora a saída pedida de cada subcomando), log JSON, `Error()` e corpo das rotas da `17091`, conferido com `secrettest.Leaks` (FDD 03).
 - **Montagem sem panic.** Invariante: `host.Core`, `host.Plugin` e `host.Run` nunca dão panic por entrada do `main` gerado; ID inválido, módulo vazio, plugin nulo ou core repetido viram problemas da categoria manifesto e saída 4.
 - **Modo de desenvolvimento impossível no binário gerado.** Invariante: sem a tag `n3x_dev`, o símbolo `host.RunDev` não existe; o binário do builder sem seção `.n3x_manifest` sai com 4 e `manifest_missing`. Medida: `go build` sem a tag mais `go tool nm` sem `RunDev`; teste com binário sem seção.
-- **Prontidão honesta e desligamento dentro do prazo.** Medida: `/ready` responde 503 desde a abertura da `17091` até as duas portas de serviço abrirem, 200 depois, e 503 em até 100 ms depois do SIGTERM; o processo termina em até `runtime.shutdown_timeout` mais 2 s mais 5 s por plugin mais 1 s; um segundo sinal encerra em até 1 s com saída 7.
+- **Prontidão honesta e desligamento dentro do prazo.** Medida: `/ready` responde 503 desde a abertura da `17091` até as duas portas de serviço abrirem, 200 depois (se nenhum plugin terminou a subida `failed`; com algum `failed`, continua 503), e 503 em até 100 ms depois do SIGTERM; o processo termina em até `runtime.shutdown_timeout` mais 2 s mais 5 s por plugin mais 1 s; um segundo sinal encerra em até 1 s com saída 7.
 - **Custo desprezível na subida.** Medida: `config.Load` do arquivo de referência (10 serviços, 2 plugins, 8 KiB) em até 5 ms no p99, sem contar o `Check` dos plugins; `preflight.Check` com integridade sobre um binário de 64 MiB em até 500 ms no runner da CI (hipótese das metas).
 - **Parse seguro contra entrada hostil.** Medida: fuzzing de `config.Load` (com `Options.Data`), do conferidor de bcrypt, do parser de CIDR, do nome de serviço e do despacho de argumentos por 5 minutos cada na CI noturna, sem panic (hipótese de duração, igual às FDDs 01 a 03 e 15).
 
@@ -156,9 +164,9 @@ Consumidores:
 - **Etapa 4, TLS** (`config.Load`, terceira parte; pulada com `--skip files` no `validate`): lê `tls.cert_file` e `tls.key_file` (até 1 MiB cada), `tls.X509KeyPair` (`tls_pair`), confere a validade do certificado folha (`tls_expired` é erro; `tls_expiring` em até 14 dias, `tls_not_yet_valid`, `tls_no_san` e `tls_dev_cert` são avisos) e monta o `tls.Config` (TLS 1.3 mínimo) que as FDDs 33 e 35 usam.
 - **Fim das etapas 0 a 4:** o host ordena e corta os problemas (100 mais `truncated`), loga um `config_problem` por problema e um `config_rejected` (ou `manifest_rejected`), e sai com o código da categoria de maior precedência (contrato 9). Sem problemas, loga os avisos (`config_warning`) e `config_loaded`, e passa o nível de log para `runtime.log_level`.
 - **Runtime Go** (entre as etapas 4 e 5): calcula `GOMEMLIMIT` (80% de `resources.memory`, senão do limite do cgroup v2 `memory.max`, senão do v1 `memory.limit_in_bytes`) e `GOMAXPROCS` (`ceil(resources.cpus)` quando declarado; senão o padrão do Go 1.26, que já respeita a cota de CPU do cgroup); aplica com `debug.SetMemoryLimit` e `runtime.GOMAXPROCS`; loga `go_runtime` e `limits_effective`. Sem limite nenhum: sem `GOMEMLIMIT` e aviso `memory_unlimited`. Soma das cotas de memória dos plugins acima de 50% do `GOMEMLIMIT`: aviso `plugin_quota_high` (mesma regra pedida pela FDD 04 ao sidecar).
-- **Operação** (entre as etapas 4 e 5): abre a `17091` (hipótese: antes das etapas 5 e 6, para `/live` responder durante `Start` longos); `/ready` em `starting`. Falha de bind: saída 6.
-- **Etapas 5 e 6, `New` e `Start` dos plugins:** o host monta, nesta ordem, o verificador de credencial (FDD 31), o repositório de sessões (FDD 34) e o host de plugins (FDD 32, que recebe os dois para o `CoreEnv`), e chama `PluginHost.Start(ctx)`. Erro de plugin obrigatório (efeito `EffectAbort` de `hostrules.OnFailure`) vira `startup_failed` com `stage` e saída 5; a FDD 32 já chamou `Stop` dos que subiram. Opcional que falha fica `failed` e a subida segue.
-- **Etapa 7, portas de serviço:** `PluginHost.StartBackground()` (tarefas de fundo antes das portas, FDD 08); monta os servidores gRPC (FDD 33) e do painel (FDD 35) com o que foi registrado; abre `17443` e depois `17444` (falha de bind: desliga o que subiu e sai com 6); `/ready` passa a `ready` (200); log `startup_complete` com a duração e o estado de cada plugin na ordem de subida.
+- **Operação** (entre as etapas 4 e 5): abre a `17091` antes das etapas 5 e 6, para `/live` responder durante `Start` longos (decisão do responsável, 2026-10-22; o passo 7 do HLD, que abre a `17091` depois do `Start`, será ajustado no WORKFLOW 3); `/ready` em `starting`. Falha de bind: saída 6.
+- **Etapas 5 e 6, `New` e `Start` dos plugins:** o host monta, nesta ordem, o verificador de credencial (FDD 31), o repositório de sessões (FDD 34) e o host de plugins (FDD 32, que recebe os dois para o `CoreEnv`), e chama `PluginHost.Start(ctx)`. Erro de plugin obrigatório (efeito `EffectAbort` de `hostrules.OnFailure`) vira `startup_failed` com `stage` e saída 5; a FDD 32 já chamou `Stop` dos que subiram. Opcional que falha fica `failed` e a subida segue, mas `/ready` não chega a 200 (L-40 revista).
+- **Etapa 7, portas de serviço:** `PluginHost.StartBackground()` (tarefas de fundo antes das portas, FDD 08); monta o login do painel (`session.NewLogin`, FDD 34) e os servidores gRPC (FDD 33) e do painel (FDD 35) com o que foi registrado; abre `17443` e depois `17444` (falha de bind: desliga o que subiu e sai com 6); `/ready` passa a `ready` (200), ou permanece em 503 `plugin_failed` se algum plugin terminou a subida `failed` (as duas portas ficam abertas); log `startup_complete` com a duração e o estado de cada plugin na ordem de subida.
 - **Em serviço:** o host espera um sinal ou o fim inesperado de um `Serve` (log `listener_failed` e desligamento com saída 6).
 
 **Fluxo de desligamento** (SIGTERM ou SIGINT)
@@ -217,7 +225,7 @@ Consumidores:
 - **Valor em claro num campo segredo de plugin:** aceito, sem aviso genérico (FDD 03, L-64); o `password_hash` bcrypt em claro é o caso normal
 - **Arquivo sem nenhum `ENC[...]` e sem `keys`:** aceito sem ler chave; com `keys.aes_file` declarado, a chave é lida e validada mesmo sem envelopes
 - **Chave com permissão acima de `0440`:** aviso `key_too_open`, nunca recusa (igual ao sidecar)
-- **Plugin opcional que falha no `New` ou no `Start`:** `failed`; a subida segue e `/ready` chega a 200 (L-40)
+- **Plugin opcional que falha no `New` ou no `Start`:** `failed`; a subida segue, as portas abrem e `/ready` fica em 503 `plugin_failed` até o restart (L-40 revista)
 - **Porta ocupada:** `listener_failed` com a porta e `errno`, saída 6; nada do que já subiu fica pendurado (desligamento parcial)
 - **Certificado vencido:** `tls_expired`, saída 2; vencendo em até 14 dias: aviso
 - **Arquivo de outra versão** (`version: 2`): só `version_unsupported`, saída 2
@@ -266,7 +274,9 @@ Estados do `/ready`:
 stateDiagram-v2
     [*] --> fechado: processo iniciado
     fechado --> starting: 17091 aberta depois das etapas 0 a 4
-    starting --> ready: 17443 e 17444 abertas
+    starting --> ready: 17443 e 17444 abertas, nenhum plugin failed na subida
+    starting --> pluginfailed: 17443 e 17444 abertas, algum plugin failed na subida (503 até o restart)
+    pluginfailed --> stopping: SIGTERM ou SIGINT
     starting --> [*]: falha de plugin obrigatório (5) ou porta (6)
     starting --> stopping: sinal durante a subida
     ready --> stopping: SIGTERM ou SIGINT
@@ -401,11 +411,14 @@ Parte 2: `grpc`, `panel`, `runtime` e `resources`
 | `grpc.login.lockout` | duração | não | `15m` | 1m a 24h | FDD 31 |
 | `grpc.login.bcrypt_concurrency` | inteiro | não | `2` | 1 a 16 | FDD 31 |
 | `grpc.login.verified_cache_ttl` | duração | não | `1h` | 1m a 24h | FDD 31 |
+| `grpc.login.bcrypt_queue` | inteiro | não | `16` | 0 a 1024; 0 desliga a espera por vaga (aprovado em 2026-10-22; pedido da FDD 31) | FDD 31 |
+| `grpc.login.bcrypt_wait` | duração | não | `5s` | 100ms a 30s; maior ou igual a `runtime.plugin_call_timeout` dá o aviso `login_wait_exceeds_call_timeout` (aprovado em 2026-10-22; pedido da FDD 31) | FDD 31 |
 | `grpc.trusted_proxies` | lista de texto | não | `[]` | até 64; prefixo CIDR IPv4 ou IPv6 em forma canônica (`10.0.0.0/24`), sem repetição, sem `/0` (hipótese) | FDD 33 (regra da FDD 09) |
 | `panel.session.idle_timeout` | duração | não | `30m` | 1m a 24h | FDD 34 |
 | `panel.session.absolute_timeout` | duração | não | `12h` | 5m a 168h; maior ou igual a `idle_timeout` | FDD 34 |
 | `panel.login.max_failures` | inteiro | não | `5` | 1 a 100, por usuário e IP | FDD 34 |
 | `panel.login.lockout` | duração | não | `15m` | 1m a 24h | FDD 34 |
+| `panel.trusted_proxies` | lista de texto | não | `[]` | mesmas regras e códigos de `grpc.trusted_proxies` (aprovado em 2026-10-22; pedido da FDD 34, L-37) | FDD 34 |
 | `panel.refresh_interval` | duração | não | `5s` | 1s a 60s (pedido da FDD 11) | FDDs 11 e 35 |
 | `runtime.log_level` | texto | não | `info` | `debug`, `info`, `warn` ou `error` | todos |
 | `runtime.shutdown_timeout` | duração | não | `20s` | 1s a 10m | esta FDD |
@@ -478,7 +491,7 @@ plugins:
   "keys": { "aes_file": "/run/n3x/aes.key" },
   "root": { "user": "admin", "password_hash": "***" },
   "services": { "estoque-api": { "secret_hash": "***" }, "pedidos": { "secret_hash": "***" } },
-  "grpc": { "limits": { "max_connections": 1000, "max_streams_per_connection": 16, "max_message": "4Mi" }, "login": { "max_failures": 5, "lockout": "15m0s", "bcrypt_concurrency": 2, "verified_cache_ttl": "1h0m0s" }, "trusted_proxies": ["10.0.0.0/24"] },
+  "grpc": { "limits": { "max_connections": 1000, "max_streams_per_connection": 16, "max_message": "4Mi" }, "login": { "max_failures": 5, "lockout": "15m0s", "bcrypt_concurrency": 2, "bcrypt_queue": 16, "bcrypt_wait": "5s", "verified_cache_ttl": "1h0m0s" }, "trusted_proxies": ["10.0.0.0/24"] },
   "panel": { "session": { "idle_timeout": "30m0s", "absolute_timeout": "12h0m0s" }, "login": { "max_failures": 5, "lockout": "15m0s" }, "refresh_interval": "5s" },
   "runtime": { "log_level": "info", "shutdown_timeout": "20s", "plugin_start_timeout": "30s", "plugin_call_timeout": "10s" },
   "resources": { "memory": "512Mi" },
@@ -517,8 +530,8 @@ plugins:
 | 10 | idem | `bcrypt_cost` | Custo fora de 12 a 16 | config |
 | 11 | `services["<nome>"]` | `name_format` | Chave fora da gramática do `service` do sidecar | config |
 | 12 | `services` | `max` | Mais de 1.024 serviços | config |
-| 13 | `grpc.trusted_proxies[i]` | `cidr_format`, `cidr_too_broad`, `duplicate` | Não é prefixo CIDR por `netip.ParsePrefix` ou não está em forma canônica; `/0`; repetido | config |
-| 14 | `grpc.trusted_proxies` | `max` | Mais de 64 itens | config |
+| 13 | `grpc.trusted_proxies[i]` e `panel.trusted_proxies[i]` | `cidr_format`, `cidr_too_broad`, `duplicate` | Não é prefixo CIDR por `netip.ParsePrefix` ou não está em forma canônica; `/0`; repetido | config |
+| 14 | `grpc.trusted_proxies` e `panel.trusted_proxies` | `max` | Mais de 64 itens | config |
 | 15 | `panel.session.absolute_timeout` | `relation` | Menor que `idle_timeout` | config |
 | 16 | `runtime.plugin_limits["<id>"]` | `id_format`, `id_part_length`, `id_part_start`, `unknown_plugin`, `half_missing` | Chave que não é ID; plugin fora do manifesto; sem metade de controller | config |
 | 17 | `runtime.plugin_limits["<id>"].<recurso>.<campo>` | `unknown_field`, `type`, `size_format`, `range` | Campo desconhecido; tipo errado; tamanho mal escrito; fora da faixa | config |
@@ -551,6 +564,7 @@ Avisos (não impedem a subida; saem no `Report`, no log `config_warning` e no `v
 | `memory_unlimited` | `resources.memory` | Sem `resources.memory` e sem limite no cgroup: sem `GOMEMLIMIT` |
 | `plugin_quota_high` | `runtime.plugin_limits` | Soma das cotas de memória dos plugins acima de 50% do `GOMEMLIMIT` |
 | `dev_manifest` | (manifesto) | Manifesto sintético do modo de desenvolvimento (só com `RunDev`) |
+| `login_wait_exceeds_call_timeout` | `grpc.login.bcrypt_wait` | `bcrypt_wait` maior ou igual a `runtime.plugin_call_timeout`: a espera nunca termina antes do prazo da chamada (FDD 31) |
 
 **Exemplo de requisição** (arquivo com erros; binário com `n3x.core` e `giustech.ratelimit`, este sem `HostValidator`)
 ```yaml
@@ -681,11 +695,14 @@ aviso: validação parcial; pulado: files (par TLS não lido)
       Lockout           time.Duration `json:"lockout" n3x:"min=1m,max=24h" default:"15m"`
       BcryptConcurrency int           `json:"bcrypt_concurrency" n3x:"min=1,max=16" default:"2"`
       VerifiedCacheTTL  time.Duration `json:"verified_cache_ttl" n3x:"min=1m,max=24h" default:"1h"`
+      BcryptQueue       int           `json:"bcrypt_queue" n3x:"min=0,max=1024" default:"16"`
+      BcryptWait        time.Duration `json:"bcrypt_wait" n3x:"min=100ms,max=30s" default:"5s"`
   }
   type Panel struct {
       Session         PanelSession  `json:"session"`
       Login           PanelLogin    `json:"login"`
       RefreshInterval time.Duration `json:"refresh_interval" n3x:"min=1s,max=60s" default:"5s"`
+      TrustedProxies  []string      `json:"trusted_proxies" n3x:"max=64" desc:"Prefixos CIDR de proxies confiáveis do painel"`
   }
   type PanelSession struct {
       IdleTimeout     time.Duration `json:"idle_timeout" n3x:"min=1m,max=24h" default:"30m"`
@@ -711,6 +728,7 @@ aviso: validação parcial; pulado: files (par TLS não lido)
       Sections       map[plugin.ID]json.RawMessage // todo plugin com metade de controller; "{}" se ausente; ENC[...] intacto
       Limits         map[plugin.ID]PluginLimits    // efetivos, com os padrões, para todo plugin com metade de controller
       TrustedProxies []netip.Prefix                // grpc.trusted_proxies já conferido
+      PanelTrustedProxies []netip.Prefix           // panel.trusted_proxies já conferido (FDD 34)
       Dir            string                        // diretório do n3x.yaml, base dos caminhos relativos
       // não exportados: chave, certificado carregado
   }
@@ -1011,7 +1029,7 @@ plugins: 2 (plugins_hash 3f9a1c2b7d4e)
 | `N3X-C002` | 2 | `n3x.yaml` inválido: leitura, sintaxe, schema v1, root, serviços, bcrypt, TLS, limites, seção de plugin | corrija os campos indicados; referência em `docs/n3x-yaml.md` |
 | `N3X-C003` | 3 | segredo ou chave: `keys.aes_file`, `ENC[...]` que não abre, `secret_unexpected` | confira `keys.aes_file` e cifre de novo com `n3x-controller encrypt --plugin <id>` e a chave certa |
 | `N3X-C004` | 4 | manifesto do binário, imagem e registro: seção ausente, integridade, versão incompatível, `image.json`, registro diferente do manifesto, dependências, privilégio indevido | gere o binário de novo com o `n3x-plugin build` de uma `controller-builder` compatível com a imagem, ou use a imagem indicada |
-| `N3X-C005` | 5 | plugin obrigatório falhou na subida (`New`, `CheckPrivileged`, `Start`, registro; FDD 32) | veja o log `startup_failed` e o do plugin; corrija a config ou retire o plugin |
+| `N3X-C005` | 5 | subida de plugin abortada (FDD 32): obrigatório que falhou em `New`, `Start` ou registro, e qualquer plugin, inclusive opcional, com recusa de registro ou de privilégio (`CheckPrivileged`) | veja o log `startup_failed` e o do plugin; corrija a config ou retire o plugin |
 | `N3X-C006` | 6 | porta: bind de `17091`, `17443` ou `17444` falhou, ou um servidor parou sozinho | libere a porta ou mude `listen.*` |
 | `N3X-C007` | 7 | desligamento forçado: prazo estourado ou segundo sinal | aumente `runtime.shutdown_timeout` ou o prazo do orquestrador; veja `shutdown_forced` |
 | `N3X-C008` | 8 | erro interno do host (panic no próprio host) | abra um bug com o log `internal_error` |
@@ -1042,7 +1060,7 @@ aviso: validação parcial; pulado: image (versão da imagem não conferida)
 - Método: `GET`, `HEAD`
 - Semântica de status/headers:
   - `/live`: 200 `ok\n` (`text/plain; charset=utf-8`) do momento em que a porta abre até o processo sair; não testa dependências (hipótese)
-  - `/ready`: 503 `starting\n` desde a abertura até `17443` e `17444` abrirem; 200 `ready\n` depois; 503 `stopping\n` a partir do sinal. Plugin opcional `failed` e core `degraded` não mudam o `/ready` (L-40): o estado de cada plugin sai em `n3x_controller_plugin_state` e no banner do painel
+  - `/ready`: 503 `starting\n` desde a abertura até `17443` e `17444` abrirem; 200 `ready\n` depois, se nenhum plugin terminou a subida `failed`; com algum `failed` (opcional também), 503 `plugin_failed\n` até o restart; 503 `stopping\n` a partir do sinal (o texto `plugin_failed` é redação da FDD, a confirmar). O core `degraded` e uma falha de plugin depois da subida não mudam o `/ready` (L-40 revista): o estado de cada plugin sai em `n3x_controller_plugin_state` e no banner do painel
   - `/metrics`: formato de texto do Prometheus (ou OpenMetrics por negociação de `Accept`), via `promhttp.HandlerFor` sobre o registro do host, com `ErrorHandling: ContinueOnError`, até 4 scrapes simultâneos e prazo de 5 s; inclui os coletores `go_*` e `process_*`, as métricas do host desta FDD, as das FDDs 31 a 35 e as dos plugins (exportadas pela FDD 32)
   - Outro método: 405 com `Allow: GET, HEAD`; outro caminho: 404; `Cache-Control: no-store` em todas as respostas
   - Servidor: `ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `WriteTimeout` 15 s, `IdleTimeout` 60 s, cabeçalhos até 8 KiB; sem autenticação (porta interna, HLD); nenhum corpo cita config, plugin, usuário ou segredo
@@ -1098,6 +1116,7 @@ n3x_controller_tls_not_after_timestamp_seconds 1.8077472e+09
       Log        *slog.Logger         // component=host; cada componente faz Log.With("component", ...)
       LogHandler slog.Handler         // o mesmo handler, para telemetry.PluginLogger (FDD 32)
       Registry   *prometheus.Registry // servido em /metrics
+      Blocked    *prometheus.CounterVec // família compartilhada login_blocked_total{kind}: "sidecar" (FDD 31) e "panel" (FDD 34)
       Clock      func() time.Time
   }
 
@@ -1128,12 +1147,13 @@ n3x_controller_tls_not_after_timestamp_seconds 1.8077472e+09
   ```
   Ordem de montagem no `run` (cada construtor é da FDD dona; os nomes são proposta):
   ```go
-  cred := credential.New(deps)                       // FDD 31: services e grpc.login
-  sess := session.New(deps)                          // FDD 34: root, panel.session, panel.login
-  ph   := plugins.New(deps, cred, sess)              // FDD 32: CoreEnv com Credentials e Sessions
+  cred, err := credential.New(deps)                  // FDD 31: services e grpc.login; devolve erro (saída 8)
+  store, err := session.New(deps)                    // FDD 34: root, panel.session, panel.login, panel.trusted_proxies; é o ctrl.SessionRevoker; devolve erro
+  ph, err := plugins.New(deps, cred, store)          // FDD 32: CoreEnv com Credentials e Sessions
   ph.Start(ctx); ph.StartBackground()
-  grpcSrv := grpcsrv.New(deps, ph, cred)             // FDD 33: cfg.TLSConfig(), grpc.limits, trusted_proxies
-  panelSrv := panel.New(deps, ph, sess)              // FDD 35: cfg.TLSConfig(), panel.refresh_interval
+  login, err := session.NewLogin(store, ph, session.LoginOptions{CallTimeout: plugin_call_timeout}) // FDD 34: só depois do Start
+  grpcSrv, err := grpcsrv.New(deps, ph)             // FDD 33: cfg.TLSConfig(), grpc.limits, trusted_proxies; sem o verificador
+  panelSrv, err := panel.New(deps, ph, store, login) // FDD 35: cfg.TLSConfig(), panel.refresh_interval
   // abre listen.grpc e listen.panel; ops.SetState(StateReady)
   ```
 - Método: n/a
@@ -1238,10 +1258,10 @@ plugins:
 - Assinatura/Rota: `ghcr.io/giustech/n3x/controller:<semver>` (índice OCI com `linux/amd64` e `linux/arm64`), fixada por digest no Dockerfile do operador; `images/Dockerfile` e `images/tools/imagemeta` no repositório
 - Método: n/a
 - Semântica:
-  - **Base:** `gcr.io/distroless/static-debian12` fixada por digest (L-24, hipótese): sem shell, sem gerenciador de pacotes, com certificados de CA e `tzdata`
+  - **Base:** `gcr.io/distroless/static-debian12` fixada por digest (L-24, confirmada pelo responsável em 2026-10-22, o que fecha a pendência de imagem base do HLD): sem shell, sem gerenciador de pacotes, com certificados de CA e `tzdata`
   - **Conteúdo próprio:** só `/usr/share/n3x/image.json` (0444) e os diretórios `/etc/n3x` (0755, ponto de montagem do `n3x.yaml` e do par TLS) e `/run/n3x` (0755, ponto de montagem da chave AES); nenhum binário (ADR-001)
   - **`image.json`:** `{"format":1,"kind":"controller","module":"github.com/giustech/n3x-controller/host","version":"<semver sem v>"}`, gerado pelo `imagemeta` a partir da tag do repositório; o `module` e o `version` são os do `host/` da mesma tag (H-02 da FDD 22). Fica fora de `/etc/n3x` porque o ConfigMap montado ali esconderia o arquivo
-  - **Execução:** `USER 17000:17000` (mesmo UID das imagens do sidecar, hipótese), `EXPOSE 17443 17444 17091`, `STOPSIGNAL SIGTERM`, `ENTRYPOINT ["/usr/local/bin/n3x-controller"]`, `CMD ["run"]`; sem `HEALTHCHECK` na imagem (o compose usa `probe`)
+  - **Execução:** `USER 17000:17000` (mesmo UID das imagens do sidecar, confirmado em 2026-10-22), `EXPOSE 17443 17444 17091`, `STOPSIGNAL SIGTERM`, `ENTRYPOINT ["/usr/local/bin/n3x-controller"]`, `CMD ["run"]`; sem `HEALTHCHECK` na imagem (o compose usa `probe`)
   - **Endurecimento:** funciona com sistema de arquivos raiz somente leitura, `drop: ALL`, `runAsNonRoot` e sem `tmpfs` (o host não escreve em disco)
   - **Rótulos OCI:** `org.opencontainers.image.source`, `.version`, `.revision`, `.licenses` e `io.n3x.host.version` (igual ao `image.json`)
   - **Binário:** o operador copia `/out/n3x-controller` para `/usr/local/bin/n3x-controller` (exemplo da FDD 21)
@@ -1310,7 +1330,7 @@ CMD ["run"]
 | Certificado vencido | `tls_expired`; saída 2 | Vencendo em 14 dias: aviso |
 | Bind da porta falha | `listener_failed`; desliga o que subiu; saída 6 | `errno` no log |
 | Plugin obrigatório falha na subida | `startup_failed` com `stage`; saída 5 | `Stop` dos que subiram (FDD 32) |
-| Plugin opcional falha | `failed`; a subida segue | `/ready` chega a 200 (L-40) |
+| Plugin opcional falha | `failed`; a subida segue | `/ready` fica em 503 `plugin_failed` até o restart (L-40 revista) |
 | `Serve` termina sozinho em serviço | `listener_failed`; desligamento; saída 6 | |
 | Prazo de desligamento estourado | `Close` forçado, `shutdown_forced`; saída 7 | Vigia total do processo |
 | Segundo sinal | Saída 7 em até 1 s | |
@@ -1342,7 +1362,7 @@ CMD ["run"]
 - Para a mesma entrada, `validate` e `run` devolvem os mesmos problemas, na mesma ordem, e o mesmo código de saída
 - Nenhum `Detail`, aviso, log, corpo da `17091` ou saída da CLI contém valor do arquivo, hash, texto aberto, envelope, carga base64, chave ou segredo, fora da saída pedida de `hash`, `credential new`, `encrypt` e `keygen`
 - Cada valor de `plugins["<id>"]` só abre com `ControllerScope(id)`
-- `/ready` responde 200 se e somente se as portas `listen.grpc` e `listen.panel` estão abertas e nenhum sinal de parada chegou
+- `/ready` responde 200 se e somente se as portas `listen.grpc` e `listen.panel` estão abertas, nenhum sinal de parada chegou e nenhum plugin terminou a subida `failed`
 - `host.Core`, `host.Plugin` e `host.Run` nunca dão panic por entrada; o host nunca chama `os.Exit`
 - O host lê o `n3x.yaml`, a chave e o par TLS uma única vez por processo e nunca lê variável de ambiente como config
 
@@ -1355,10 +1375,10 @@ CMD ["run"]
 | Métrica | Tipo | Rótulos | Fonte |
 | --- | --- | --- | --- |
 | `n3x_controller_build_info` | gauge = 1 | `version` (`runtime.version` do manifesto), `plugins_hash` (`PluginsHash()`) | HLD; FDD 22 |
-| `n3x_controller_ready` | gauge 0 ou 1 | | `/ready` (nova, hipótese) |
-| `n3x_controller_startup_duration_seconds` | gauge | | da etapa 0 ao `ready` (nova, hipótese) |
-| `n3x_controller_go_memory_limit_bytes` | gauge | | `GOMEMLIMIT` aplicado; 0 sem limite (nova, hipótese) |
-| `n3x_controller_tls_not_after_timestamp_seconds` | gauge | | `NotAfter` do certificado folha em segundos Unix (nova, hipótese) |
+| `n3x_controller_ready` | gauge 0 ou 1 | | `/ready` (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_startup_duration_seconds` | gauge | | da etapa 0 ao fim da subida (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_go_memory_limit_bytes` | gauge | | `GOMEMLIMIT` aplicado; 0 sem limite (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_tls_not_after_timestamp_seconds` | gauge | | `NotAfter` do certificado folha em segundos Unix (nova, aprovada em 2026-10-22; HLD a atualizar) |
 | `go_*` e `process_*` | coletores padrão | | `client_golang` |
 
 - Cardinalidade: uma série por métrica do host; `plugins_hash` muda só com um binário novo
@@ -1451,7 +1471,7 @@ CMD ["run"]
 - **Montagem:** `host.Core("", nil)`, `host.Plugin("Inválido", "m", p)`, `host.Plugin("n3x.core", m, p)` e dois `Item` com o mesmo ID não dão panic e saem com 4 e as regras `registry_*` do contrato 1
 - **Golden do `main`:** `host/testdata/controller_core.go.golden` e `controller_core_ratelimit.go.golden`, copiados da FDD 21 sem alteração, compilam na CI do `n3x-controller` contra o `host/` atual com módulos falsos de plugin (`go build` com um `go.mod` temporário e `replace` só no teste); a CI falha se o golden do builder mudar e a cópia não
 - **Desenvolvimento:** `go build ./...` sem a tag não compila `cmd/n3x-controller-dev` nem `host/dev.go`, e `go tool nm` do binário de teste não lista `RunDev`; `go run -tags n3x_dev ./cmd/n3x-controller-dev --config dev/n3x.yaml` (com o core `v0.1.0`) chega a `/ready` 200 em até 5 s com `dev_manifest` e `tls_dev_cert` no log; o teste de `go/ast` acha a mesma árvore do golden trocando só `Run` por `RunDev`; os hashes do `dev/n3x.yaml` abrem com as senhas documentadas
-- **Ciclo de vida:** `/live` responde 200 enquanto um plugin de teste demora 3 s no `Start`, e `/ready` responde 503 `starting` no mesmo intervalo; `/ready` passa a 200 só depois de `17443` e `17444` aceitarem conexão; plugin opcional `failed` deixa `/ready` em 200 (L-40); SIGTERM põe `/ready` em 503 em até 100 ms; com `shutdown_timeout: 2s` e um servidor que não termina, o processo sai com 7 em até 2 s mais 2 s mais 5 s por plugin mais 1 s; segundo SIGTERM sai com 7 em até 1 s; SIGHUP gera `signal_ignored` e não muda nada; SIGTERM durante a subida sai com 0; porta ocupada dá 6 e nenhuma goroutine de servidor fica viva (`goleak`)
+- **Ciclo de vida:** `/live` responde 200 enquanto um plugin de teste demora 3 s no `Start`, e `/ready` responde 503 `starting` no mesmo intervalo; `/ready` passa a 200 só depois de `17443` e `17444` aceitarem conexão; plugin opcional `failed` na subida deixa `/ready` em 503 `plugin_failed` com as duas portas abertas, e core `degraded` ou plugin que falha depois da subida não mudam o `/ready` (L-40 revista); SIGTERM põe `/ready` em 503 em até 100 ms; com `shutdown_timeout: 2s` e um servidor que não termina, o processo sai com 7 em até 2 s mais 2 s mais 5 s por plugin mais 1 s; segundo SIGTERM sai com 7 em até 1 s; SIGHUP gera `signal_ignored` e não muda nada; SIGTERM durante a subida sai com 0; porta ocupada dá 6 e nenhuma goroutine de servidor fica viva (`goleak`)
 - **Ordem dos eventos:** o teste do contrato 11 produz exatamente a sequência de eventos mostrada
 - **CLI:** `hash` recusa stdin terminal, vazio, só `\n` e 73 bytes com saída 1, remove uma única quebra final e avisa `password_short` abaixo de 12 bytes; `credential new pedidos` imprime exatamente duas linhas, o segredo tem 43 caracteres base64url, e o hash abre com ele; com `--key`, o envelope abre com `ServiceScope("pedidos")` e o texto aberto não aparece em stdout nem em stderr; `credential new Pedidos` dá 1; `encrypt` sem `--plugin` dá 1, com chave ausente dá 3, e o envelope só abre com `ControllerScope` do ID dado; `encrypt --plugin acme.inexistente` avisa `plugin_not_in_binary` e sai com 0; `keygen` dá 45 bytes e 1.000 chaves diferentes; `dev-cert` grava 0644 e 0600, recusa sobrescrever sem `--force`, gera um certificado que `x509.Verify` aceita para `localhost` e `n3x-controller` com ele mesmo como raiz, e recusa `--days 91`; `probe` sai 0 com 200 e 1 com 503, porta fechada ou prazo de 2 s
 - **Despacho:** `n3x-controller`, `n3x-controller --config x` e `n3x-controller run` sobem pelo `run`; `docker run <imagem> validate` e `docker run -i <imagem> hash` funcionam com o `ENTRYPOINT` e o `CMD` do contrato 13; palavra desconhecida dá 1
@@ -1517,6 +1537,16 @@ CMD ["run"]
     - `credential new --key` evita o segredo em claro na tela
     - Teste de canário sobre o corpus, a CLI e a `17091`
 - **Plano de contingência:** patch e rotação do segredo exposto (`credential new`, troca do hash e restart, ADR-005)
+
+### Plugin opcional falho tira o controller do Service do orquestrador
+
+- **Probabilidade:** média
+- **Impacto:** com `/ready` em 503 `plugin_failed` (L-40 revista), um pod com plugin opcional `failed` não recebe tráfego do Service no Kubernetes, e os sidecars e o painel, onde o banner aparece, ficam inalcançáveis, embora o processo esteja de pé. Num rolling update, o pod novo nunca fica pronto e o antigo continua
+- **Mitigação:**
+    - `/live` continua 200, então o orquestrador não reinicia o pod
+    - Estado do plugin em `n3x_controller_plugin_state` e no log `startup_complete`, com alerta sobre `plugin_state{state="failed"}`
+    - O guia do operador (FDD 47) documenta o efeito e o acesso ao painel por `port-forward`
+- **Plano de contingência:** corrigir a config do plugin, ou retirá-lo da imagem e redeployar; rollback da imagem
 
 ### Probes do orquestrador matam o controller durante subidas longas
 

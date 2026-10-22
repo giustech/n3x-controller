@@ -68,10 +68,15 @@ Responsável: Guilherme Giusti
 - ADRs do `n3x-controller`: ADR-001, ADR-002, ADR-003 e ADR-007; do `n3x-sdk`: ADR-004, ADR-012, ADR-015, ADR-016, ADR-017, ADR-018, ADR-019 e ADR-022; do `n3x-builder`: ADR-003
 - FDDs aplicadas: 01 (`OwnsGRPCService`, `OwnsRoute`, `RoutePrefix`, `FieldErrors`, notação L-34), 02 (`DecodeConfig` com opener), 04 (`memory.Runtime`), 06 (`telemetry`, `Background`, `Dial`, `DialDenyList`, `Sleep`), 08 (contrato inteiro), 09 (`CheckPrivileged`, `CoreEnv`, tabela pública, `Authenticate`, `CheckUser`, estado do core), 10 e 11 (`ui.Widget`, `ui.Query`, `ui.Reply`, `Routes.Action`), 12 (`hostrules`, `hostconformance`), 13 (exemplo com `grpc`, `routes` e `cards`), 30 (`boot`, `Config`, `Bundle`, saídas), 31 (`*Verifier`, `credentialtest`), 36 (core obrigatório, sem dependências), 40 (`ctrl.UserDirectory` sobre a instância do core), 41 (Store fora da cota)
 - Lacunas do README:
-  - **L-36 fechada aqui:** um plugin vira `falho` em runtime quando acumula 5 panics em 60 s nas chamadas de entrada (gRPC, página, ação, cartão, autenticação e API entre plugins) ou quando passa de 100 chamadas presas (zumbis) ao mesmo tempo; panic em tarefa de fundo e falha de ciclo de vida não contam; vale também para o obrigatório, que não derruba o processo (contrato 7) (hipótese, H-06 e H-07)
+  - **L-36 fechada aqui:** um plugin vira `falho` em runtime quando acumula 5 panics em 60 s nas chamadas de entrada (gRPC, página, ação, cartão, autenticação e API entre plugins) ou quando passa de 100 chamadas presas (zumbis) ao mesmo tempo; panic em tarefa de fundo e falha de ciclo de vida não contam; vale também para o obrigatório, que não derruba o processo (contrato 7) (limiares fixos aprovados pelo responsável em 2026-10-22, H-06 e H-07)
   - **L-02 aplicada:** `CoreEnv.ControllerManifest()` devolve cópia dos bytes do manifesto lido pelo pré-voo; `CallerIP(ctx)` lê a marca que a FDD 33 põe no `ctx` com `plugins.ContextWithCallerIP`; o estado do core é o `StateCell` lido por `Host.CoreState()` (contratos 2 e 4)
   - **L-51 e L-15 aplicadas:** limites efetivos de `Config.Limits` por plugin; o Store do core fica fora da conta de memória do SDK (FDD 41)
   - **L-52, L-53 e L-63 aplicadas:** transporte em processo da API entre plugins (contrato 8); `Routes.Action` no catálogo (contrato 4); `ValidateHost` só na fase de config da FDD 30
+- Decisões da clarificação (responsável, 2026-10-22):
+  - Critério de `falho` em runtime com valores fixos (5 panics de entrada em 60 s, ou mais de 100 chamadas presas), válido também para o core, sem campo no `n3x.yaml` (P-01 fica fora da v1); o processo nunca é derrubado por isso (coerente com o HLD: o host funciona com o core `falho` ou `degradado`)
+  - Hipóteses menores aprovadas em bloco: 3 métricas novas da seção 7, rótulos `kind` extras de `plugin_panics_total` (`auth`, `plugin_api`, `background`, `lifecycle`), 7 eventos de log novos, destinos negados do `Dial` (só as 3 portas do controller em loopback), sem cascata de falha entre dependentes (H-08), limites da API entre plugins (4 MiB por mensagem, 16 em trânsito) e sem delegação da identidade do usuário nessa API
+  - Consequência da decisão da CTL-01 (`/ready` 503 com plugin `failed` na subida): corrigidos o fluxo "plugin opcional com `Start` falhando" e as referências à L-40
+  - A CTL-01 (contrato 9) descreve `N3X-C005` como "plugin obrigatório falhou na subida", mas o contrato 10 desta FDD o aplica a todo `EffectAbort`, inclusive recusa de registro e de privilégio de opcional (I-04); o texto da CTL-01 precisa de ajuste (WORKFLOW 3)
 - Pontos em aberto de FDDs anteriores fechados aqui: P-03 da FDD 12 (`DefaultDialDeny` confirmado para as portas padrão; o host real usa `Config.Ports()`), P-05 da FDD 12 (critério de `falho` em runtime), P-07 da FDD 12 (`Advance` com espera real), P-07 da FDD 30 (lista de destinos negados a partir de `Config.Ports()`)
 - Pedidos atendidos:
   - FDDs 01 e 08: recusa fora do namespace por `OwnsGRPCService` e `OwnsRoute`, no `Registrar` e de novo na montagem do catálogo (contrato 3)
@@ -186,7 +191,7 @@ Responsável: Guilherme Giusti
 - O plugin declara `Degraded` e `OK` quando quiser; o observador do host loga `plugin_state_changed` (no máximo 1 por segundo por plugin, com `suppressed`) e atualiza `n3x_controller_plugin_state_changes_total`; `n3x_controller_plugin_state` é lido no scrape
 - O contador de panics de cada plugin guarda os instantes dos últimos 5 panics de entrada; o 5º dentro de 60 s, ou o 101º zumbi vivo, dispara `Fail` com o motivo do host
 - Ao virar `falho` em runtime: o contexto base do plugin é cancelado (chamadas em curso recebem o cancelamento), novas chamadas recebem `UNAVAILABLE`, 503, cartão `unavailable` ou `Unavailable`; as tarefas de fundo dele são canceladas com 2 s; o host chama `Stop` uma vez, com 5 s, numa goroutine com `recover`; o plugin sai do menu e da visão geral e ganha banner; cada plugin que declarou dependência dele recebe `ErrDependencyFailed` em `Dependency` e o log `dependency_failed`; o host não mexe no estado do dependente (H-08)
-- Plugin obrigatório (inclusive o core) que vira `falho` em runtime não derruba o processo e não muda o `/ready` (L-40 da FDD 30, H-07); com o core `falho`, a FDD 33 responde `UNAVAILABLE` a tudo e a FDD 34 só deixa o root entrar (FDD 09, contrato 16)
+- Plugin obrigatório (inclusive o core) que vira `falho` em runtime não derruba o processo e não muda o `/ready` (L-40 revista da FDD 30: só falha na subida deixa o `/ready` em 503; H-07); com o core `falho`, a FDD 33 responde `UNAVAILABLE` a tudo e a FDD 34 só deixa o root entrar (FDD 09, contrato 16)
 
 **Fluxo de desligamento: `Stop(ctx)`** (etapa 3 do HLD; a FDD 30 chama depois de parar os servidores)
 1. Marca o host como parando: toda chamada nova recebe `UNAVAILABLE`, 503 ou `Unavailable`.
@@ -196,7 +201,7 @@ Responsável: Guilherme Giusti
 5. Cancela o `memory.Runtime.Run` e o monitor; devolve o `StopReport`.
 
 **Fluxos alternativos e exceções**
-- **Plugin opcional com `Start` falhando:** `falho` com motivo "falhou na subida: start (erro)"; sem serviços, páginas, ações e cartões no catálogo; banner com o motivo; o controller sobe e o `/ready` chega a 200 (FDD 30)
+- **Plugin opcional com `Start` falhando:** `falho` com motivo "falhou na subida: start (erro)"; sem serviços, páginas, ações e cartões no catálogo; banner com o motivo; o controller sobe com as portas abertas, mas o `/ready` fica em 503 `plugin_failed` até o restart (L-40 revista, FDD 30)
 - **Plugin opcional com `New` que estoura o prazo:** `falho` com estágio `new` e `reason: timeout`; a goroutine do `New` fica abandonada (Go não mata goroutine), log `plugin_call_abandoned`; se ela voltar depois com uma instância, a instância é descartada
 - **Plugin obrigatório com `Start` falhando:** `*boot.StartupError{Stage: start}`; `Stop` dos já iniciados em ordem inversa; saída 5 pela FDD 30
 - **Plugin opcional que registra serviço fora do namespace:** recusa no `Close` (`foreign_service`), estágio `registration`, aborta a subida, mesmo sendo opcional (FDD 08)
@@ -747,9 +752,9 @@ r2 := ph.Card(ctx, ph.Cards(ctrl.RoleRead)[1], ctrl.Identity{Role: ctrl.RoleRead
   - **Panics de entrada que contam:** gRPC (`grpc`), página, ação e cartão (`panel`), API entre plugins (`plugin_api`, contado no provedor) e capacidades do core chamadas pelo host (`auth`). **Não contam:** tarefa de fundo (já reinicia com backoff, igual ao sidecar, FDD 18) e ciclo de vida (`lifecycle`: `New`, `Start`, registros, `Stop`), que já têm efeito próprio
   - **Janela:** anel com os instantes dos últimos 5 panics; o 5º com o mais antigo a menos de 60 s marca `falho` dentro da mesma chamada, que ainda responde 500 ou `INTERNAL` (mesmo operador `>=` do disjuntor do sidecar, FDD 18)
   - **Zumbi:** chamada unária, página, ação, cartão ou chamada pela API entre plugins que não voltou até o prazo mais 1 s; conta enquanto não volta; o 101º vivo marca `falho` (mesmo operador `>` do sidecar)
-  - **Valores fixos na v1** (hipótese, H-06): os mesmos padrões do `runtime.panic_breaker` do sidecar (5, 60 s, 100), sem campo no `n3x.yaml` do controller; um campo por paridade fica em aberto (P-01)
+  - **Valores fixos na v1** (aprovados pelo responsável em 2026-10-22, H-06): os mesmos padrões do `runtime.panic_breaker` do sidecar (5, 60 s, 100), sem campo no `n3x.yaml` do controller; um campo por paridade fica em aberto (P-01)
   - **Motivos do host:** `falhou na subida: <estágio> (<razão>)`, `desligado pelo host: 5 panics em 60s`, `desligado pelo host: mais de 100 chamadas presas`
-  - **Efeitos do `falho` em runtime** (H-07): contexto base cancelado; novas chamadas recusadas sem tocar o plugin; tarefas canceladas com 2 s; `Stop` chamado uma vez, com 5 s, em goroutine com `recover`, e não chamado de novo no desligamento; saída do menu e da visão geral; banner; `dependency_failed` para cada dependente. O processo segue, inclusive com o core: o `/ready` não muda (L-40) e o operador reinicia o controller para voltar
+  - **Efeitos do `falho` em runtime** (H-07): contexto base cancelado; novas chamadas recusadas sem tocar o plugin; tarefas canceladas com 2 s; `Stop` chamado uma vez, com 5 s, em goroutine com `recover`, e não chamado de novo no desligamento; saída do menu e da visão geral; banner; `dependency_failed` para cada dependente. O processo segue, inclusive com o core: o `/ready` não muda (falha depois da subida não afeta o `/ready`, L-40 revista) e o operador reinicia o controller para voltar
   - **Sem cascata** (H-08): o host não marca o dependente; ele recebe `ErrDependencyFailed` ou `Unavailable` e decide
   - **Observador:** cada transição loga `plugin_state_changed` com `cause` (`plugin` para as do próprio plugin; `startup`, `panics` ou `zombies` para as do host), soma `n3x_controller_plugin_state_changes_total{state}` e nunca bloqueia; sem evento para fora do processo (FDD 08)
 
@@ -1041,9 +1046,9 @@ return render(w, r.Widget, modo)
 | `n3x_controller_card_duration_seconds` | histogram (`telemetry.DefaultBuckets`) | `plugin`, `card` | `Host.Card` (FDD 08) |
 | `n3x_controller_card_failures_total` | counter | `plugin`, `card`, `reason` (`timeout`, `error`, `panic`, `nil_widget`) | `Host.Card` (FDD 08) |
 | `n3x_controller_plugin_api_calls_total` | counter | `plugin`, `dependency`, `code` | transporte em processo (FDD 08) |
-| `n3x_controller_plugin_inflight` | gauge | `plugin` | chamadas de entrada em curso (nova, hipótese) |
-| `n3x_controller_plugin_zombies` | gauge | `plugin` | chamadas presas além do prazo mais 1 s (nova, hipótese) |
-| `n3x_controller_plugin_start_seconds` | gauge | `plugin` | duração de `New` mais `Start` mais registros (nova, hipótese) |
+| `n3x_controller_plugin_inflight` | gauge | `plugin` | chamadas de entrada em curso (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_plugin_zombies` | gauge | `plugin` | chamadas presas além do prazo mais 1 s (nova, aprovada em 2026-10-22; HLD a atualizar) |
+| `n3x_controller_plugin_start_seconds` | gauge | `plugin` | duração de `New` mais `Start` mais registros (nova, aprovada em 2026-10-22; HLD a atualizar) |
 | `n3x_plugin_memory_bytes`, `n3x_plugin_memory_max_bytes`, `n3x_plugin_memory_evictions_total` | gauge, gauge, counter | `plugin` | `memory.Account.Stats` (FDD 04) |
 | `n3x_plugin_background_tasks`, `n3x_plugin_background_restarts_total` | gauge, counter | `plugin`; `plugin`, `task` | tarefas de fundo (FDD 06, sem `instance` no controller) |
 | `n3x_plugin_dial_conns`, `n3x_plugin_dial_max_conns`, `n3x_plugin_dial_failures_total` | gauge, gauge, counter | `plugin`; o último também `reason` | `Dial` (FDD 06) |
@@ -1057,7 +1062,7 @@ return render(w, r.Widget, modo)
 
 | Evento (`msg`) | Nível | Campos | Amostragem |
 | --- | --- | --- | --- |
-| `plugins_starting` | info | `plugins` (ordem), `required` | um por subida (novo, hipótese) |
+| `plugins_starting` | info | `plugins` (ordem), `required` | um por subida (novo, aprovado em 2026-10-22) |
 | `memory_quota` | info | `plugin_id`, `max_bytes`, `source` (`default` ou `n3x.yaml`) | um por plugin (FDD 04) |
 | `memory_oversize` | warn | `plugin_id`, `map`, `count`, `max_bytes` | no máximo 1 por minuto por plugin (FDD 04) |
 | `privileged_granted`, `privileged_refused`, `capability_unused` | info, error, info | os da FDD 09 | os da FDD 09 |
@@ -1065,16 +1070,16 @@ return render(w, r.Widget, modo)
 | `plugin_registration_refused` | error | `plugin_id`, `path`, `rule`, `detail` | um por problema (FDD 08) |
 | `plugin_started` | info | `plugin_id`, `capabilities`, `state`, `duration_ms` | um por plugin (FDD 08) |
 | `plugin_start_failed` | error | `plugin_id`, `required`, `stage`, `reason` (`error`, `timeout`, `panic`), `effect` (`abort`, `failed`, `failed_stop`), `duration_ms`, `error` | um por plugin (FDD 08, campos `stage` e `effect` novos) |
-| `plugin_call_abandoned` | warn | `plugin_id`, `step` | um por etapa abandonada (novo, hipótese) |
+| `plugin_call_abandoned` | warn | `plugin_id`, `step` | um por etapa abandonada (novo, aprovado em 2026-10-22) |
 | `plugin_state_changed` | info, warn ou error pelo destino | `plugin_id`, `from`, `to`, `cause`, `reason`, `suppressed` | no máximo 1 por segundo por plugin (FDD 08; `cause` novo) |
 | `state_ignored` | warn | `plugin_id`, `call` | uma vez por plugin (FDD 08) |
 | `plugin_panic` | error | `plugin_id`, `kind`, `where` (método, padrão de rota, cartão ou tarefa), `panic_type`, `panic` (só `error` e `string`, até 256 bytes), `request_id`, `suppressed`, `stack` (até 16 KiB) | no máximo 1 por segundo por plugin; os outros contados em `suppressed` (HLD) |
-| `plugin_call_zombie` | warn | `plugin_id`, `kind`, `where`, `zombies` | no máximo 1 por minuto por plugin (novo, hipótese) |
+| `plugin_call_zombie` | warn | `plugin_id`, `kind`, `where`, `zombies` | no máximo 1 por minuto por plugin (novo, aprovado em 2026-10-22) |
 | `page_failed` | error | `plugin_id`, `route`, `status`, `error` | no máximo 1 por segundo por plugin (FDD 08) |
 | `card_failed` | warn | `plugin_id`, `card`, `reason` | no máximo 1 por minuto por cartão (FDD 08) |
 | `dependency_refused` | warn | `plugin_id`, `dependency`, `rule` | no máximo 1 por minuto por par (FDD 08) |
-| `dependency_failed` | warn | `plugin_id` (dependente), `dependency`, `reason` | um por par e transição (novo, hipótese) |
-| `caller_missing` | error | `method` | no máximo 1 por minuto (novo, hipótese) |
+| `dependency_failed` | warn | `plugin_id` (dependente), `dependency`, `reason` | um por par e transição (novo, aprovado em 2026-10-22) |
+| `caller_missing` | error | `method` | no máximo 1 por minuto (novo, aprovado em 2026-10-22) |
 | `background_panic`, `background_zombie`, `dial_slot_timeout`, `dial_leak`, `metric_misuse` | os da FDD 06 | os da FDD 06 | os da FDD 06 |
 | `plugin_stopped` | info | `plugin_id`, `duration_ms`, `cause` (`shutdown`, `abort`, `runtime_failure`, `register_panic`) | um por `Stop` (FDD 08; `cause` novo) |
 | `plugin_stop_failed` | warn | `plugin_id`, `reason` (`error`, `timeout`, `panic`, `skipped`) | um por plugin (FDD 08) |

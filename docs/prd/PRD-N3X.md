@@ -1,7 +1,7 @@
 ### PRD: N3X Plataforma v1 (controller, sidecar, SDK, builder e plugin core)
 
-Versão: 1.5
-Data: 2026-10-20
+Versão: 1.6
+Data: 2026-10-22
 Responsável: Guilherme Giusti
 
 ---
@@ -195,7 +195,7 @@ O controller expõe um único servidor gRPC, com uma porta, um TLS e uma autenti
 - O controller não guarda tokens; a chave HMAC é do plugin core: vem de `session.hmac_key` (em `ENC[...]`, opcional e recomendada em produção) na seção do core no `n3x.yaml` do controller ou, sem ela, são 32 bytes aleatórios gerados na subida e mantidos só em memória
 - O token é um HMAC-SHA256 sobre serviço, instância, emissão, expiração e nonce, com TTL de 1 h, conferido com comparação em tempo constante
 - A chamada segue para o serviço do plugin, com a identidade do chamador no contexto
-- Toda chamada gera métrica e log com a identidade do chamador
+- Toda chamada gera métrica com a identidade do chamador; as falhas sempre geram log e o log de chamada bem-sucedida fica em `debug`, por causa do volume com 500 sidecars
 
 **Fluxos alternativos e exceções**
 - Várias instâncias do mesmo serviço usam a mesma credencial, mas cada uma recebe a própria sessão, ligada à identidade da instância (FR-016)
@@ -305,7 +305,7 @@ O controller tem um único root, definido no `n3x.yaml` do controller com a senh
 - Trocar a senha do root: altera o hash no `n3x.yaml` e reinicia o controller
 - Criar, desativar, remover ou trocar a senha de um usuário de leitura: altera a seção do core no `n3x.yaml` do controller e reinicia o controller; na v1, o painel não oferece essas ações nem a troca da própria senha
 - A sessão fica na memória do controller, referenciada por um cookie seguro, e expira após o período de inatividade definido no `n3x.yaml`; um restart do controller exige novo login
-- Plugin core falho ou degradado: só o root entra no painel
+- Plugin core falho ou degradado: só o root entra no painel, e as sessões de leitura abertas são cortadas na transição
 
 **Erros previstos**
 - Login inválido: mensagem genérica, sem revelar se o usuário existe; depois de 5 tentativas seguidas, o login fica bloqueado por 15 minutos para aquele usuário e IP

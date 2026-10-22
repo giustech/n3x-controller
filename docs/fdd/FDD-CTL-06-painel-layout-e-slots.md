@@ -48,8 +48,8 @@ Esta entrevista achou cinco problemas novos:
 
 **Suposições**
 - Go 1.26 ou superior, sem cgo; `net/http.ServeMux` com padrões por método e curingas (Go 1.22 ou superior)
-- Echo v5 (`github.com/labstack/echo/v5`) e templ (`github.com/a-h/templ`) nas versões do `go.mod` do `host/` (hipótese de versão, H-01); os arquivos `*_templ.go` gerados são versionados, para o builder compilar sem a CLI do templ (FDD 21, `GOPROXY=off`)
-- htmx 2.0.4 vendorizado no repositório, conferido por SHA-256 (hipótese de patch, H-02)
+- Echo v5 (`github.com/labstack/echo/v5`) e templ (`github.com/a-h/templ`) nas versões do `go.mod` do `host/` (versão aprovada em 2026-10-22, H-01); os arquivos `*_templ.go` gerados são versionados, para o builder compilar sem a CLI do templ (FDD 21, `GOPROXY=off`)
+- htmx 2.0.4 vendorizado no repositório, conferido por SHA-256 (patch aprovado em 2026-10-22, H-02)
 - Navegadores alvo: as duas últimas versões estáveis de Chrome, Edge, Firefox e Safari (FDD 10)
 - O host de plugins já subiu: `Catalog()` não é nulo quando `panel.New` é chamado
 - Poucos operadores ao mesmo tempo: até 10 abas abertas com polling (FDD 11, hipótese para a FDD 51)
@@ -73,8 +73,12 @@ Esta entrevista achou cinco problemas novos:
 - ADRs: ADR-008 do `n3x-controller` (polling e cartões); ADR-018 (widgets, nenhum plugin escreve HTML) e ADR-022 (métricas) do `n3x-sdk`; ADR-009 do `n3x-plugin-core` (banner de degradado com motivo)
 - FDDs aplicadas: 01 (`plugin.ID`, `RoutePrefix`), 06 (`telemetry.NewRequestID`, `ContextWithRequestID`, `NewLogHandler`), 08 (`PageEntry`, `CardEntry`, `InMenu`, gramática de path, `Role.Meets`, `ContextWithCaller`, `ErrNotFound`, `ErrBadRequest`, `ErrNilWidget`, `CardTimeout`, P-09 e I-04 dela), 10 (`Renderer`, modos, IDs, `Stylesheet`, `StylesheetName`, `CardContainerID`, `uitest`, P-04 dela), 11 (`Refresh`, `RefreshHeader`, `ModeExport`, `Request.Path`, `Request.Flash`, `ReadSubmission`, `Finish`, `MaxSubmitBytes`, métricas e eventos propostos, P-08 dela), 12 (`hostrules.PanelMode`, `FlashAllowed`, `HandlerStatus`, `RunPanel`, `RunCalls`, P-04 dela), 13 (cartão `negacoes`, páginas e `Action` de exemplo), 30 (`boot.Server`, `boot.Deps`, `TLSConfig()`, `listen.panel`, `panel.refresh_interval`, ordem de montagem, P-09 dela), 32 (contratos 4, 6, 7, 11 e 12; H-09 e H-21 dela), 33 (clone do TLS com ALPN próprio), 34 (contratos 2, 4, 5 e 6; H-12 e H-22 dela)
 - Lacunas do README:
-  - **L-38 fechada aqui:** o htmx 2.0.4 sobe com `<meta name="htmx-config">` contendo `includeIndicatorStyles: false`, `allowEval: false`, `allowScriptTags: false`, `historyCacheSize: 0`, `refreshOnHistoryMiss: true`, `selfRequestsOnly: true` e `defaultFocusScroll: false`; com isso o htmx não injeta `<style>`, não avalia código e não guarda páginas no `localStorage`, e a CSP `style-src 'self'` e `script-src 'self'` passa sem violação (contrato 5) (hipótese de valores, H-02)
+  - **L-38 fechada aqui:** o htmx 2.0.4 sobe com `<meta name="htmx-config">` contendo `includeIndicatorStyles: false`, `allowEval: false`, `allowScriptTags: false`, `historyCacheSize: 0`, `refreshOnHistoryMiss: true`, `selfRequestsOnly: true` e `defaultFocusScroll: false`; com isso o htmx não injeta `<style>`, não avalia código e não guarda páginas no `localStorage`, e a CSP `style-src 'self'` e `script-src 'self'` passa sem violação (contrato 5) (valores aprovados em 2026-10-22, H-02)
   - **L-22 aplicada:** a folha do SDK (`ui.Stylesheet`, nome por hash) é o único CSS; o layout em templ usa só as classes `n3x-*` do SDK; as classes que faltam ao esqueleto viram pedido à FDD 10 (contrato 10)
+- Decisões da clarificação (responsável, 2026-10-22):
+  - Cartão sem título próprio na v1: a visão geral agrupa os cartões por plugin, com o ID do plugin como título do grupo (I-08, P-01); o campo `Title` do `ctrl.CardEntry` fica como evolução por adição no SDK
+  - Hipóteses menores aprovadas em bloco: cabeçalhos de segurança do contrato 4 (inclusive `Referrer-Policy: same-origin`), HSTS de 1 ano sem `includeSubDomains`, sem compressão de HTML, htmx 2.0.4 com `htmx-config` restritivo, `X-Request-Id` do cliente ignorado, ordem dos middlewares com `request_id` e observação por fora do recover (difere do HLD, que lista o recover primeiro), roteamento exato e path não canônico em 404, 256 conexões e 64 cartões por visão geral, aviso de uso único ausente quando a ação redireciona para a visão geral (H-21), CI de acessibilidade com Playwright, axe e Node 22, galeria só com a tag `n3x_dev`, 3 métricas novas do painel
+  - Consequência da decisão da CTL-05: com o core fora de `ok`, as sessões de leitura são cortadas (não seguem até expirar); corrigido o fluxo do modo de emergência
 - Pontos em aberto de FDDs anteriores fechados aqui:
   - P-04 da FDD 12: plugin `falho` em runtime responde 503 com página genérica; `falho` na subida não tem rota (404); ordem de cartões, menu e banners com o core primeiro e os demais por ID (H-12, pedido de função em `hostrules`); métricas e eventos do painel propostos pela FDD 11 confirmados com os nomes do contrato 13
   - P-09 da FDD 12: a ordem escolhida difere da do kit, então vira função de `hostrules` (pedido às FDDs 12 e 32)
@@ -132,7 +136,7 @@ Esta entrevista achou cinco problemas novos:
 - Telas e cartões do core (sidecars, configs, divergência, fluxo, usuários): FDD 45 (CORE-09)
 - Servidor gRPC: FDD 33 (CTL-04); porta `17091`: FDD 30 (CTL-01)
 - Medição do p95 com 500 sidecars: FDD 51 (CTL-07)
-- Fora da v1 (hipótese): compressão de HTML, tema escolhido pelo usuário, indicador de carregamento, envio por htmx, SSE, título próprio de cartão (P-01), aviso de uso único na visão geral (H-21), página de ajuda do host
+- Fora da v1 (aprovado em 2026-10-22): compressão de HTML, tema escolhido pelo usuário, indicador de carregamento, envio por htmx, SSE, título próprio de cartão (P-01), aviso de uso único na visão geral (H-21), página de ajuda do host
 
 ---
 
@@ -209,7 +213,7 @@ Esta entrevista achou cinco problemas novos:
 - **Cartão lento, com erro, panic ou widget nulo:** "Cartão <id> indisponível agora." no lugar dele; os outros seguem; a FDD 32 conta e loga
 - **Cartão com árvore inválida:** indisponível, `CardRenderFailed` (pedido à FDD 32), `page_render_failed` com `mode=card` e `n3x_controller_panel_render_failures_total{reason="invalid_tree"}`
 - **Nenhum cartão visível:** estado vazio "Nenhum plugin registrou cartões para o seu papel." (`n3x-empty`)
-- **Core fora de `ok` (modo de emergência):** banner "Modo de emergência: o plugin core está <estado>. Só o root pode entrar no painel até ele voltar a ok." em todas as páginas, antes dos banners por plugin; sessões de leitura abertas seguem até expirar (FDD 34, H-13 dela); com o core `falho`, as telas do core dão 503 e os cartões do core somem
+- **Core fora de `ok` (modo de emergência):** banner "Modo de emergência: o plugin core está <estado>. Só o root pode entrar no painel até ele voltar a ok." em todas as páginas, antes dos banners por plugin; as sessões de leitura abertas são cortadas na transição do core (FDD 34, H-13 revista em 2026-10-22), e quem foi cortado vê esse aviso na página de login; com o core `falho`, as telas do core dão 503 e os cartões do core somem
 - **Bloco de fragmento que sumiu:** `Retargeted`; `HX-Retarget: #n3x-page` e `HX-Reswap: outerHTML` com o conteúdo da página
 - **Polling com a sessão vencida:** o `Require` responde 200 com `HX-Redirect` (FDD 34); o observador conta `n3x_controller_panel_refresh_total{result="expired"}`
 - **Polling com erro 4xx ou 5xx:** o htmx 2 não troca; os dados anteriores ficam; `refresh_total{result="error"}`
@@ -449,7 +453,7 @@ go func() { errc <- panelSrv.Serve(ln) }()
   - **Sessão global com exceções exatas:** o `Require` é um middleware global do Echo com um filtro que pula só `/login` e `/logout` (path exato) e `/assets/` e `/favicon.ico` (só `GET` e `HEAD`); assim rota desconhecida sem sessão vai ao login, sem revelar quais rotas existem
   - **Adaptador `net/http` para o Echo (H-22 da FDD 34):** `echo.WrapMiddleware(store.Require)` e `echo.WrapHandler(http.HandlerFunc(login.ServeLogin))`; o adaptador troca o `*http.Request` do contexto do Echo pelo que o `Require` repassa, para a `View` chegar aos handlers; conferido por teste (`session.FromContext` no handler depois do adaptador)
   - **Chamador:** com a `View`, `ctx = ctrl.ContextWithCaller(ctx, view.Identity())`; o `Caller` de qualquer camada anterior é sobrescrito (FDD 08)
-  - **`X-Request-Id`:** sempre um novo, gerado pelo painel; `X-Request-Id` vindo do cliente é ignorado (hipótese, H-05); o mesmo valor vai em todo log e na página de erro
+  - **`X-Request-Id`:** sempre um novo, gerado pelo painel; `X-Request-Id` vindo do cliente é ignorado (aprovado em 2026-10-22, H-05); o mesmo valor vai em todo log e na página de erro
   - **HEAD:** mesmo caminho do `GET`, sem corpo (o `net/http` descarta)
 
 **Exemplo de requisição**
@@ -528,14 +532,14 @@ GET  /plugins/n3x/example//negacoes
 | `X-Frame-Options` | `DENY` | HLD; navegadores sem `frame-ancestors` |
 | `X-Content-Type-Options` | `nosniff` | arquivos exportados e assets |
 | `Referrer-Policy` | `same-origin` | HLD; `no-referrer` faria o POST de mesma origem sair com `Origin: null` e quebraria o `CheckOrigin` da FDD 34 (I-07) |
-| `Strict-Transport-Security` | `max-age=31536000` | painel só em TLS; sem `includeSubDomains` (hipótese) |
+| `Strict-Transport-Security` | `max-age=31536000` | painel só em TLS; sem `includeSubDomains` (aprovado em 2026-10-22; vale também no desenvolvimento com o dev-cert em localhost) |
 | `Cross-Origin-Opener-Policy` | `same-origin` | isola a janela |
 | `Cross-Origin-Resource-Policy` | `same-origin` | assets e exportações só para o próprio painel |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` | nenhum recurso de dispositivo |
 | `Cache-Control` | `no-store` em página, fragmento, erro, exportação, login e 303; `public, max-age=31536000, immutable` só em asset com hash | FDD 11 (token e dados pessoais fora do cache) |
 | `X-Request-Id` | valor do `request_id` | correlação com o log |
 
-  - **Sem compressão de HTML** (hipótese, H-09): página, fragmento e exportação saem sem `Content-Encoding`, o que elimina o BREACH mesmo além do token mascarado da FDD 34; só os assets estáticos saem em gzip
+  - **Sem compressão de HTML** (aprovado em 2026-10-22, H-09): página, fragmento e exportação saem sem `Content-Encoding`, o que elimina o BREACH mesmo além do token mascarado da FDD 34; só os assets estáticos saem em gzip
   - **`Content-Type`:** `text/html; charset=utf-8` em página, fragmento e erro; o da exportação vem de `Result.MediaType`; o dos assets, da tabela do contrato 11
   - Os cabeçalhos são escritos antes do handler; o handler só acrescenta (`HX-*`, `Location`, `Allow`, `Content-Disposition`) e nunca troca a CSP
 
@@ -573,7 +577,7 @@ X-Request-Id: 9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b
   ```
 - Método: `GET` (o htmx só faz `GET` na v1; envios são POST comuns, FDD 11)
 - Semântica de status/headers:
-  - **L-38 fechada:** `includeIndicatorStyles: false` impede o `<style>` injetado; `allowEval: false` desliga `hx-on`, `js:` e `eval`; `allowScriptTags: false` não executa `<script>` de conteúdo trocado; `historyCacheSize: 0` não grava página no `localStorage` (token e dados pessoais, I-11 da FDD 11); `refreshOnHistoryMiss: true` faz o voltar do navegador recarregar a URL inteira; `defaultFocusScroll: false` não rola a tela no polling (hipótese de valores, H-02)
+  - **L-38 fechada:** `includeIndicatorStyles: false` impede o `<style>` injetado; `allowEval: false` desliga `hx-on`, `js:` e `eval`; `allowScriptTags: false` não executa `<script>` de conteúdo trocado; `historyCacheSize: 0` não grava página no `localStorage` (token e dados pessoais, I-11 da FDD 11); `refreshOnHistoryMiss: true` faz o voltar do navegador recarregar a URL inteira; `defaultFocusScroll: false` não rola a tela no polling (valores aprovados em 2026-10-22, H-02)
   - **Cabeçalhos lidos:** `HX-Request` (só `true` vale), `HX-Target` (sem `#`), `HX-History-Restore-Request`, `HX-Current-URL` (pela FDD 34, no `HX-Redirect`) e `N3X-Refresh` (`ui.RefreshHeader`, valor `1`)
   - **Modo de página de plugin:** `hostrules.PanelMode(q, hx, hxTarget)`, com `hx = HX-Request == "true" && HX-History-Restore-Request != "true"`: chave `<id>.export` válida dá `ModeExport`; senão `HX-Target` começando com `n3x-p-` dá `ModeFragment`; senão `ModePage` (FDDs 10, 11 e 12)
   - **Modo da visão geral:** `HX-Request: true` com `HX-Target: n3x-overview` dá só o bloco; qualquer outro caso, a página inteira
@@ -633,7 +637,7 @@ Cache-Control: no-store
 | Cliente desconectou | sem resposta | nada | status `499` só na métrica e no `debug` |
 
   - **Renderização antes dos cabeçalhos (FDD 10):** o `Render` escreve num buffer do pool; só com sucesso o painel escreve status, cabeçalhos e corpo, numa chamada; com erro, a página genérica ainda pode sair
-  - **Prazo único:** o `ctx` da requisição ganha `runtime.plugin_call_timeout` antes de `Host.Page`; o renderizador usa o mesmo `ctx`, então função e renderização dividem os 10 s (hipótese, H-10)
+  - **Prazo único:** o `ctx` da requisição ganha `runtime.plugin_call_timeout` antes de `Host.Page`; o renderizador usa o mesmo `ctx`, então função e renderização dividem os 10 s (aprovado em 2026-10-22, H-10)
   - **`ui.Request`:** `Mode` e `Target` de `PanelMode`; `Query` igual à da `PageFunc`; `Plugin` da entrada; `CSRFToken = view.CSRFToken()` (86 caracteres, mascarado a cada renderização, FDD 34); `Root = view.Identity().Role == ctrl.RoleRoot`; `RefreshInterval = panel.refresh_interval`; `Path = r.URL.EscapedPath()`; `Flash` de `view.TakeFlash(mode, hx, refresh, r.URL.Path)`, que aplica `hostrules.FlashAllowed` (página inteira, sem htmx, sem polling, mesmo path) e apaga o aviso entregue
   - **Título:** `<title>` = `Result.Title` + " | N3X"; páginas do host: "Visão geral | N3X", "Página não encontrada | N3X" e assim por diante
   - **Texto do erro do plugin:** nunca vai para a página; vai para o log da FDD 32
@@ -1143,7 +1147,7 @@ $ make a11y   # sobe o controller de desenvolvimento e roda ci/a11y/panel.spec.t
 
 - Do HLD: `n3x_controller_panel_requests_total{route,method,status}` (com `method` acrescentado, I-05) e `n3x_controller_panel_duration_seconds{route}`
 - Confirmadas das FDDs 10 e 11 (P-04 da FDD 12): `n3x_controller_panel_render_failures_total{plugin,reason}`, `n3x_controller_panel_render_notices_total{plugin,kind}`, `n3x_controller_panel_actions_total{plugin,route,result}`, `n3x_controller_panel_action_duration_seconds{plugin,route}`, `n3x_controller_panel_exports_total{plugin,format,result}`, `n3x_controller_panel_export_duration_seconds{plugin,format}`, `n3x_controller_panel_refresh_total{plugin,result}`
-- Novas (hipótese, H-15): `n3x_controller_panel_inflight`, `n3x_controller_panel_connections`, `n3x_controller_panel_host_panics_total{where}`
+- Novas (aprovadas em 2026-10-22, H-15; HLD a atualizar): `n3x_controller_panel_inflight`, `n3x_controller_panel_connections`, `n3x_controller_panel_host_panics_total{where}`
 - Lidas da FDD 32: `n3x_controller_plugin_panics_total{plugin,kind="panel"}`, `n3x_controller_card_duration_seconds`, `n3x_controller_card_failures_total`, `n3x_controller_plugin_state`
 - Cardinalidade: rotas limitadas ao catálogo (até 64 páginas e 32 ações por plugin) e às rotas fixas; nenhum rótulo com dado de usuário
 

@@ -43,7 +43,7 @@ Responsável: Guilherme Giusti
 - Go 1.26 ou superior, sem cgo; `golang.org/x/crypto/bcrypt` e `prometheus/client_golang` nas versões do `go.mod` do `host/`
 - A config já passou pelas regras da FDD 30: `root.user` com `^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`, `root.password_hash` bcrypt `$2a$`, `$2b$` ou `$2y$` de custo 12 a 16 (L-39), faixas de `panel.session` e `panel.login`, `absolute_timeout >= idle_timeout`
 - O painel serve TLS 1.3 próprio em `listen.panel` (FDD 35 com `Config.TLSConfig()`); o cookie é sempre `Secure`
-- Navegadores com `SameSite=Strict` (Chrome 80, Firefox 69, Safari 13 ou mais novos) (hipótese de versão mínima)
+- Navegadores com `SameSite=Strict` (Chrome 80, Firefox 69, Safari 13 ou mais novos) (versão mínima aprovada em 2026-10-22)
 - htmx 2.0.x faz só `GET` na v1: polling, paginação, ordenação e abas; `Form` e `Action` enviam `POST` comum, sem htmx (FDD 11)
 - Controller em instância única por ambiente (ADR-001 do `n3x-sdk`); sessão em memória não se divide entre réplicas (ADR-006)
 
@@ -63,10 +63,15 @@ Responsável: Guilherme Giusti
 - ADRs do `n3x-controller`: ADR-002, ADR-003 (parte que segue valendo), ADR-006; do `n3x-sdk`: ADR-009 (sem tracing), ADR-019 (`CheckUser`, `ChangePassword`, `Revoke`), ADR-020 (segredos fora de logs); do `n3x-plugin-core`: ADR-002, ADR-003 e ADR-009
 - FDDs aplicadas: 03 (`plugin.Secret`), 06 (`telemetry`, `request_id`), 08 (`Identity`, papéis, `ContextWithCaller`), 09 (contratos 12, 14, 16 e 17), 10 e 11 (`ui.Request.CSRFToken`, `_csrf`, `_return`, `ui.Flash`, `FlashTTL`, `MaxFlashBytes`, `N3X-Refresh`, `HX-Redirect`), 12 (`hostrules.FlashAllowed`, `PanelLogin` do kit, P-08), 30 (`File.Root`, `File.Panel`, faixas, `boot.Deps`, ordem de montagem, L-39), 31 (família `login_blocked_total`, regra de IP zero e IP mapeado, P-02), 32 (`CoreState`, `CheckUser`, `SessionRevoker`, harness), 40 (comparação exata com `root.user`, retornos do `CheckUser`, P-01 e P-04)
 - Lacunas do README:
-  - **L-37 fechada aqui:** o IP do bloqueio é o do par TCP da conexão com a `17444`; `X-Forwarded-For` só vale vindo de par listado no campo novo `panel.trusted_proxies` (mesma gramática de `grpc.trusted_proxies`, vazio por padrão), lido da direita para a esquerda até o primeiro endereço fora da lista; IPv4 mapeado vira IPv4; sem IP, balde `unknown` (contrato 8) (hipótese, H-03)
+  - **L-37 fechada aqui:** o IP do bloqueio é o do par TCP da conexão com a `17444`; `X-Forwarded-For` só vale vindo de par listado no campo novo `panel.trusted_proxies` (mesma gramática de `grpc.trusted_proxies`, vazio por padrão), lido da direita para a esquerda até o primeiro endereço fora da lista; IPv4 mapeado vira IPv4; sem IP, balde `unknown` (contrato 8) (aprovado pelo responsável em 2026-10-22, H-03; o campo `panel.trusted_proxies` falta no schema da CTL-01 e no HLD, WORKFLOW 3)
   - **L-02 aplicada:** a regra "só o root entra" lê `Host.CoreState()` (FDD 32), que é o `StateCell` do core (FDD 09, contrato 16)
   - **L-39 aplicada:** o root aceita `$2a$`, `$2b$` e `$2y$` com `bcrypt.CompareHashAndPassword`
-- Pontos em aberto de FDDs anteriores fechados aqui: P-02 da FDD 31 (limitador próprio de 1 vaga para o root), P-01 da FDD 40 (`ErrVerifierBusy` e `ctx.Err()` não contam no bloqueio), P-04 da FDD 40 (aviso `panel_login_timeout_short` abaixo de 5 s, sem prazo próprio), P-03 da FDD 30 (campo `panel.trusted_proxies`), P-08 da FDD 12 (bloqueio e guarda do aviso reais aqui; o kit continua sem simular o bloqueio), hipótese do contrato 16 da FDD 09 (sessões abertas seguem até expirar)
+- Decisões da clarificação (responsável, 2026-10-22):
+  - `panel.trusted_proxies` aceito (mesma gramática de `grpc.trusted_proxies`, vazio por padrão); o schema da CTL-01 (contrato 2 e `Config.PanelTrustedProxies`) e o HLD precisam receber o campo (WORKFLOW 3)
+  - Bloqueio só pelo par (usuário, IP), como no PRD e no HLD; o contador por IP (`IPFailureFactor`, 4 x `max_failures`) saiu da FDD
+  - Core `degraded` ou `failed`: as sessões de leitura abertas são cortadas na transição (revogação definitiva, motivo `core_state`), em vez de seguirem até expirar; o root nunca é cortado
+  - Hipóteses menores aprovadas em bloco: 1.024 sessões (16 por usuário) e 16.384 chaves de bloqueio; pool de bcrypt do root (1 vaga, fila 4, espera 3 s), o que soma até 5 bcrypt simultâneos no processo (2 do verificador de sidecar, 2 do diretório do core, 1 do root) e exige corrigir o "máximo 2" do HLD e do ADR-004 (WORKFLOW 3); cookie `n3x_login` e token CSRF mascarado; checagem de `Origin` e `Sec-Fetch-Site`; 429 com `Retry-After`; aviso de modo de emergência visível a qualquer visitante da página de login; sem bcrypt de referência no modo de emergência (H-20, o tempo de resposta pode revelar o nome do root); aviso de senha padrão ou fraca do root; usuário fora da gramática logado como `<invalid>`; as 8 métricas novas do painel
+- Pontos em aberto de FDDs anteriores fechados aqui: P-02 da FDD 31 (limitador próprio de 1 vaga para o root), P-01 da FDD 40 (`ErrVerifierBusy` e `ctx.Err()` não contam no bloqueio), P-04 da FDD 40 (aviso `panel_login_timeout_short` abaixo de 5 s, sem prazo próprio), P-03 da FDD 30 (campo `panel.trusted_proxies`), P-08 da FDD 12 (bloqueio e guarda do aviso reais aqui; o kit continua sem simular o bloqueio), contrato 16 da FDD 09 (a hipótese de as sessões abertas seguirem até expirar foi revertida em 2026-10-22: as sessões de leitura são cortadas quando o core sai de `ok`)
 - Pedidos atendidos:
   - FDD 08: identidade `{RoleRoot ou RoleRead, User}` pronta para o `ContextWithCaller` da FDD 35; sem IP nem ID de sessão para plugin (contrato 5)
   - FDD 09: login com bloqueio, root pelo arquivo, estado do core e `CheckUser` com `plugin.NewSecret`; `Revoke` implementado (contratos 2 e 7)
@@ -143,18 +148,18 @@ Responsável: Guilherme Giusti
 3. **CSRF do login:** cookie `n3x_login` presente e `_csrf` igual ao HMAC dele (`hmac.Equal`): senão 403 com a página de login, um token novo e "O formulário expirou. Tente de novo."; `panel_login_refused` com `reason=csrf`. Não conta no bloqueio.
 4. **Entrada:** `user` de 1 a 64 bytes UTF-8 válido sem caractere de controle e `password` de 1 a 72 bytes; fora disso, a tentativa é falha de credencial sem bcrypt (conta no bloqueio, resposta genérica).
 5. **IP:** `clientIP(r)` pela regra do contrato 8.
-6. **Bloqueio:** consulta e reserva no rastreador (contrato 3): par (`user`, IP) bloqueado, ou com `falhas + em voo >= max_failures`; ou, para nome diferente do root, IP bloqueado: 429 com `Retry-After`, `n3x_controller_login_blocked_total{kind="panel"}`, `panel_login_blocked` (no máximo 1 por minuto por chave) e nenhum bcrypt.
+6. **Bloqueio:** consulta e reserva no rastreador (contrato 3): par (`user`, IP) bloqueado, ou com `falhas + em voo >= max_failures`: 429 com `Retry-After`, `n3x_controller_login_blocked_total{kind="panel"}`, `panel_login_blocked` (no máximo 1 por minuto por chave) e nenhum bcrypt.
 7. **Root:** `user == File.Root.User` (igualdade exata de bytes, contrato 7 da FDD 40): limitador do root (1 vaga, até 4 na fila, até 3 s de espera, H-06); `bcrypt.CompareHashAndPassword(root.password_hash, senha)`. Sem vaga no prazo: resultado `busy`, resposta genérica, não conta.
 8. **Outro usuário, core fora de `ok`:** `ph.CoreState().State != ctrl.StateOK`: resultado `core_unavailable`, resposta genérica, `auth_core_unavailable` (no máximo 1 por minuto, com a contagem do período), não conta, sem bcrypt.
 9. **Outro usuário, core em `ok`:** `ph.CheckUser(r.Context(), user, plugin.NewSecret(senha))`; o host de plugins aplica `runtime.plugin_call_timeout`, `recover` e a conferência da identidade (FDD 32, contrato 5). Mapeamento na tabela abaixo.
-10. **Falha que conta:** registra a falha no par e no IP (o IP só para nome diferente do root); na quinta falha do par, o par fica bloqueado por `lockout` e sai `panel_login_blocked` com `scope=pair`; resposta genérica.
-11. **Sucesso:** apaga a contagem do par (a do IP fica); encerra a sessão apresentada no cookie, se houver (`replaced`); cria a sessão nova (contrato 2) com `RoleRoot` ou `RoleRead`; confere a senha do root contra a regra de senha fraca (H-16); grava o cookie `n3x_session`, apaga o `n3x_login`; `panel_login` com `result=ok`; 303 para `SafeNext(next)`.
+10. **Falha que conta:** registra a falha no par (`user`, IP); na quinta falha do par, o par fica bloqueado por `lockout` e sai `panel_login_blocked` com `scope=pair`; resposta genérica.
+11. **Sucesso:** apaga a contagem do par; encerra a sessão apresentada no cookie, se houver (`replaced`); cria a sessão nova (contrato 2) com `RoleRoot` ou `RoleRead`; confere a senha do root contra a regra de senha fraca (H-16); grava o cookie `n3x_session`, apaga o `n3x_login`; `panel_login` com `result=ok`; 303 para `SafeNext(next)`.
 
 | Retorno | Resultado (`result`) | Conta no bloqueio | Resposta | Log |
 | --- | --- | --- | --- | --- |
 | Root com senha certa ou `Identity{RoleRead, user}` | `ok` | não (apaga o par) | 303 para `next` | `panel_login` info |
 | Senha do root errada, entrada inválida ou `ctrl.ErrInvalidCredentials` | `fail` | sim | 200 genérica | `panel_login` warn, `reason` `password` ou `input` |
-| Par ou IP bloqueado | `blocked` | não | 429 com `Retry-After` | `panel_login_blocked` |
+| Par (`user`, IP) bloqueado | `blocked` | não | 429 com `Retry-After` | `panel_login_blocked` |
 | Limitador do root sem vaga ou `ctrl.ErrVerifierBusy` | `busy` | não | 200 genérica | `panel_login` warn, `reason=busy` |
 | Core fora de `ok` (não root) ou `plugins.ErrPluginUnavailable` | `core_unavailable` | não | 200 genérica | `auth_core_unavailable` e `panel_login` |
 | `context.DeadlineExceeded` ou `context.Canceled` | `timeout` | não | 200 genérica | `panel_login` warn, `reason=timeout` |
@@ -187,7 +192,7 @@ Responsável: Guilherme Giusti
 - `store.Revoke(user)` (pelo core, `env.Sessions().Revoke`, sem uso na v1): encerra todas as sessões com `User` exatamente igual, devolve quantas, loga `panel_sessions_revoked` com a contagem; a próxima requisição dessas sessões vai ao login
 
 **Fluxos alternativos e exceções**
-- **Core muda para `degraded` ou `failed` com sessões de leitura abertas:** as sessões seguem até expirar; o banner da FDD 35 avisa; o login de novos usuários de leitura é recusado (H-13, confirma a hipótese do contrato 16 da FDD 09)
+- **Core muda para `degraded` ou `failed` com sessões de leitura abertas** (decisão do responsável, 2026-10-22; H-13 revista): corte definitivo na transição. Na primeira requisição de sessão que observa `Host.CoreState().State != ctrl.StateOK`, o `Require` revoga de uma vez todas as sessões de papel `RoleRead` (motivo `core_state`, log `panel_sessions_revoked` com a contagem) e anota o instante do estado (`StateInfo.Since`) para não repetir o corte; o root nunca é cortado. Quem foi cortado vai ao login, que mostra o aviso de emergência (login novo de leitura só com o core em `ok`); se o core voltar a `ok`, cada usuário de leitura faz login de novo. A detecção é preguiçosa, pelo `CoreState()` que o `NewLogin` entrega ao `Store` (o `Store` nasce antes do host de plugins, mas o `Require` só roda depois do `Start`); não exige observador no host de plugins (detalhe de implementação proposto, a confirmar). Oscilação do core entre duas requisições, sem nenhuma requisição de sessão durante o estado ruim, não corta (limite documentado)
 - **Plugin core `failed` em runtime:** `Host.CheckUser` devolve `ErrPluginUnavailable` mesmo se o `CoreState` lido antes ainda dizia `ok` (corrida): mesmo resultado `core_unavailable`
 - **Limite de sessões do usuário (16):** a 17ª encerra a sessão mais antiga dele (`evicted`)
 - **Limite total (1.024):** a sessão nova encerra a de acesso mais antigo, de qualquer usuário (`evicted`); `panel_session_ended` sai para ela
@@ -213,7 +218,7 @@ sequenceDiagram
     participant S as session.Store
     B->>L: POST /login (user, password, next, _csrf)
     L->>L: forma, Origin, _csrf do login, entrada
-    L->>T: reserva (user, IP) e IP
+    L->>T: reserva (user, IP)
     alt bloqueado
         T-->>L: bloqueado até t
         L-->>B: 429 Retry-After
@@ -285,7 +290,6 @@ Os contratos 1, 2, 3, 5, 7 e 11 são internos ao módulo `github.com/giustech/n3
       MaxSessions        = 1024             // teto total (H-08)
       MaxSessionsPerUser = 16               // teto por usuário (H-08)
       MaxTrackedLogins   = 16384            // chaves do rastreador de bloqueio (H-08)
-      IPFailureFactor    = 4                // falhas por IP = 4 x max_failures (H-04)
       RootSlots          = 1                // vagas de bcrypt do root (H-06)
       RootQueue          = 4                // lugares de espera do root
       RootWait           = 3 * time.Second  // espera máxima por vaga do root
@@ -473,7 +477,7 @@ out := login.Check(ctx, session.Attempt{User: "ana", Password: plugin.NewSecret(
   - **Expiração:** recusada quando `agora >= created + absolute_timeout` ou `agora >= created + lastUse + idle_timeout`; o uso só avança para frente
   - **Limites:** 16 por usuário (despeja a mais antiga do usuário), 1.024 no total (despeja a de último uso mais antigo); cada sessão custa cerca de 400 bytes sem aviso, até 16 KiB com aviso (H-08)
   - **Rastreador, par (`user`, IP):** janela fixa de `lockout` a partir da primeira falha; `max_failures` falhas na janela bloqueiam por `lockout` contado da falha que bloqueou; tentativas durante o bloqueio não estendem; sucesso apaga o par; `failures + pending >= max_failures` recusa como bloqueado, o que impede passar do limite com tentativas em paralelo (H-04)
-  - **Rastreador, IP:** conta falhas de nomes que não são o root; `IPFailureFactor * max_failures` (20 no padrão) falhas na janela bloqueiam o IP por `lockout` para nomes que não são o root; o root só obedece ao par, para um terceiro não negar o acesso do root a partir de outro IP nem varrendo nomes (H-04, P-05)
+  - **Sem contador por IP** (decisão do responsável em 2026-10-22: só o par, como no PRD): a varredura de nomes de um mesmo IP é limitada pelo par de cada nome e pelo custo do bcrypt; o root só é bloqueado pelo próprio par, então um terceiro em outro IP nunca nega o acesso do root (H-04 revista)
   - **Chave do IP:** IPv4 mapeado vira IPv4; IPv6 pelo endereço inteiro; IP zero vira o balde `unknown` (mesma regra da FDD 31, H-03); o `user` entra na chave exatamente como digitado (até 64 bytes)
   - **Teto e varredura:** até 16.384 chaves (cerca de 160 bytes cada, 2,6 MiB); varredura preguiçosa a cada `SweepInterval` no caminho de uma requisição ou do scrape, apagando sessões vencidas e entradas sem bloqueio com janela vencida
   - **Concorrência:** uma trava para os mapas e o rastreador; uso por operação atômica sem trava; nenhum bcrypt nem `CheckUser` roda com a trava
@@ -490,8 +494,7 @@ out := login.Check(ctx, session.Attempt{User: "ana", Password: plugin.NewSecret(
 {
   "pair(ana,10.42.3.17)": { "failures": 5, "first": "14:00:00", "blocked_until": "14:15:40" },
   "14:01:00": "429, Retry-After: 880",
-  "14:01:05 (outro IP)": "303, sessão de leitura criada",
-  "ip(10.42.3.17)": { "failures": 5, "blocked": false }
+  "14:01:05 (outro IP)": "303, sessão de leitura criada"
 }
 ```
 
@@ -694,7 +697,7 @@ n := cenv.Sessions().Revoke("ana")
 | `panel.session.absolute_timeout` | duração | `12h` | 5m a 168h, maior ou igual a `idle_timeout` | expiração absoluta |
 | `panel.login.max_failures` | inteiro | `5` | 1 a 100 | par; o IP usa 4 vezes |
 | `panel.login.lockout` | duração | `15m` | 1m a 24h | janela e duração do bloqueio |
-| `panel.trusted_proxies` (novo) | lista de texto | `[]` | até 64; prefixo CIDR IPv4 ou IPv6 em forma canônica, sem repetição, sem `/0` (mesmas regras e códigos de `grpc.trusted_proxies`) | IP do cliente |
+| `panel.trusted_proxies` (novo, aprovado em 2026-10-22) | lista de texto | `[]` | até 64; prefixo CIDR IPv4 ou IPv6 em forma canônica, sem repetição, sem `/0` (mesmas regras e códigos de `grpc.trusted_proxies`) | IP do cliente |
 | `runtime.plugin_call_timeout` | duração | `10s` | 100ms a 5m | só o aviso `panel_login_timeout_short` |
 
 - Método: n/a
@@ -736,7 +739,7 @@ panel:
 | Evento (`msg`) | Nível | Campos | Amostragem |
 | --- | --- | --- | --- |
 | `panel_login` | info (ok) ou warn | `user`, `ip`, `result` (`ok`, `fail`, `busy`, `core_unavailable`, `timeout`, `error`), `reason`, `role` (só ok), `target` (`root` ou `other`), `suppressed` | `ok` sempre; demais no máximo 1 por segundo por par, `suppressed` conta as omitidas |
-| `panel_login_blocked` | warn | `user`, `ip`, `scope` (`pair` ou `ip`), `until`, `failures`, `suppressed` | ao bloquear sempre; tentativas no bloqueio no máximo 1 por minuto por chave |
+| `panel_login_blocked` | warn | `user`, `ip`, `scope` (`pair`), `until`, `failures`, `suppressed` | ao bloquear sempre; tentativas no bloqueio no máximo 1 por minuto por chave |
 | `panel_logout` | info | `user`, `ip`, `reason=logout` | sempre |
 | `panel_session_ended` | info | `user`, `reason` (`idle`, `absolute`, `replaced`, `evicted`, `revoked`), `age_s` | sempre |
 | `panel_sessions_revoked` | info | `user`, `count` | sempre |
@@ -778,8 +781,8 @@ Login de ana com senha errada e depois com a certa; logout; sessão do root venc
 | `n3x_controller_login_blocked_total` | counter | `kind="panel"` (família compartilhada com a FDD 31) | tentativas recusadas por bloqueio (HLD) |
 | `n3x_controller_panel_logins_total` | counter | `result` (`ok`, `fail`, `blocked`, `busy`, `core_unavailable`, `timeout`, `error`), `target` (`root`, `other`) | resultado de cada `POST /login` que passou da forma, origem e CSRF |
 | `n3x_controller_panel_login_duration_seconds` | histogram | `target` | tempo do `Check`, buckets de 0,001 a 8 s (12 valores) |
-| `n3x_controller_panel_sessions_ended_total` | counter | `reason` (`logout`, `idle`, `absolute`, `replaced`, `evicted`, `revoked`) | fim de sessão |
-| `n3x_controller_panel_lockouts_active` | gauge | `scope` (`pair`, `ip`) | chaves bloqueadas agora |
+| `n3x_controller_panel_sessions_ended_total` | counter | `reason` (`logout`, `idle`, `absolute`, `replaced`, `evicted`, `revoked`, `core_state`) | fim de sessão |
+| `n3x_controller_panel_lockouts_active` | gauge | `scope` (`pair`) | chaves bloqueadas agora |
 | `n3x_controller_panel_login_tracked` | gauge | (nenhum) | chaves no rastreador |
 | `n3x_controller_panel_csrf_rejected_total` | counter | `kind` (`login`, `logout`, `action`) | tokens recusados |
 | `n3x_controller_panel_root_bcrypt_inflight` e `_waiting` | gauge | (nenhum) | ocupação do limitador do root |
@@ -855,7 +858,6 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
 | Senha do root errada | `fail`, conta no par | Uma comparação bcrypt |
 | Entrada vazia, acima de 64 ou 72 bytes, UTF-8 inválido | `fail` (`reason=input`), conta, sem bcrypt | Resposta igual à da senha errada |
 | Par bloqueado ou reservas cheias | 429 com `Retry-After`; sem bcrypt | Não estende o bloqueio |
-| IP bloqueado (nome que não é o root) | 429 | O root no mesmo IP segue pelo par |
 | Limitador do root sem vaga em 3 s ou fila cheia | `busy`, 200 genérica, não conta | `panel_root_bcrypt_waiting` mostra |
 | Core `degraded` ou `failed` (não root) | `core_unavailable`, 200 genérica, não conta | `auth_core_unavailable` 1 por minuto |
 | `ErrInvalidCredentials` do diretório | `fail`, conta | Inclui desativado e inexistente |
@@ -889,7 +891,6 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
   - `N3X-Refresh: 1` nunca avança o último uso
   - Todo destino de redirecionamento do login passa por `SafeNext`
   - O ID de sessão, o token CSRF e a senha nunca aparecem em log, métrica, erro ou atributo de outra sessão
-  - O root nunca é bloqueado pelo contador por IP
 
 ---
 
@@ -955,7 +956,7 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
 
 - **Bloqueio (FR-009):** com relógio falso, 5 POSTs com senha errada de `ana` a partir de `10.42.3.17` bloqueiam o par; o sexto, com a senha certa, recebe 429 com `Retry-After` igual aos segundos que faltam e 0 chamadas ao `CheckUser`; em `lockout + 1 s` depois da quinta falha, a senha certa entra; o mesmo vale para o root com o espião do `Compare`
 - **Paralelo:** 20 POSTs simultâneos com senha errada para o mesmo par executam no máximo 5 comparações; os demais recebem 429
-- **Por IP:** 20 falhas em nomes diferentes de um IP bloqueiam o IP para nomes que não são o root; o root no mesmo IP continua sendo conferido; outro IP não é afetado
+- **Sem contador por IP:** 20 falhas em 20 nomes diferentes a partir de um mesmo IP não bloqueiam nenhum outro nome nem o root; cada par (nome, IP) bloqueia sozinho na quinta falha
 - **Sucesso apaga o par:** 4 falhas, um sucesso e mais 4 falhas não bloqueiam
 - **Não contam:** `ErrVerifierBusy`, prazo, core fora de `ok`, `ErrMisbehavior`, panic, limitador do root sem vaga, CSRF e origem: 10 de cada seguidos não bloqueiam
 - **Resposta igual:** usuário inexistente, senha errada, desativado, diretório ocupado, prazo, panic do core e core `degraded` (não root) dão 200 e HTML igual byte a byte depois de normalizar o `_csrf`
@@ -992,7 +993,6 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
 - **Impacto:** alto: o operador fica fora do painel durante um incidente
 - **Mitigação:**
     - Chave do bloqueio pelo par (usuário, IP): tentativas de outro IP não bloqueiam o root
-    - O root não obedece ao contador por IP (H-04)
     - Bloqueio não é estendido por tentativas durante o bloqueio
 - **Plano de contingência:** restart do controller limpa todos os bloqueios (estado em memória); a FDD 47 documenta o procedimento
 
@@ -1002,7 +1002,7 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
 - **Impacto:** médio: senhas fracas caem com muitas tentativas
 - **Mitigação:**
     - bcrypt de custo mínimo 12 (cerca de 250 ms por tentativa) e limitador de 1 vaga no root, 2 no diretório
-    - Contador por IP contra a varredura de nomes
+    - Sem contador por IP (decisão de 2026-10-22): a varredura de nomes é limitada só pelo par de cada nome e pelo bcrypt
     - Aviso `root_password_weak` e `n3x-controller hash` avisando senha curta (FDD 30)
     - Alerta de `login_blocked_total{kind="panel"}`
 - **Plano de contingência:** restringir a `17444` por rede (guia da FDD 47); um limite de taxa no proxy reverso, com `panel.trusted_proxies`
@@ -1020,10 +1020,9 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
 ### Proxy reverso sem `panel.trusted_proxies`
 
 - **Probabilidade:** média
-- **Impacto:** médio: todos os operadores parecem vir do IP do proxy; o contador por IP barra os usuários de leitura de todos depois de 20 falhas
+- **Impacto:** médio: todos os operadores parecem vir do IP do proxy; o bloqueio por par (usuário, IP do proxy) barra o mesmo usuário de todos os operadores depois de 5 falhas
 - **Mitigação:**
     - `caller_ip_proxy_suspected` quando chega `X-Forwarded-For` de par não confiável
-    - O root não é afetado pelo contador por IP
     - Guia da FDD 47 com a configuração do proxy
 - **Plano de contingência:** configurar `panel.trusted_proxies` e reiniciar
 
@@ -1064,11 +1063,12 @@ _, errAna := rt.PanelLogin("ana", plugin.NewSecret("senha-da-ana"), netip.MustPa
     - Recomendação de custo igual para root e leitura (FDD 47)
 - **Plano de contingência:** bcrypt de referência no caminho do modo de emergência numa minor, se a revisão pedir (H-20)
 
-### Sessões de leitura ficam abertas com o core degradado
+### Sessões de leitura cortadas quando o core sai de `ok`
 
 - **Probabilidade:** média
-- **Impacto:** baixo: veem dados antigos, com banner
+- **Impacto:** médio: os usuários de leitura perdem a visão do painel justamente durante o incidente do core, e só o root permanece; uma oscilação do core obriga todos a fazerem login de novo (login de leitura só com o core em `ok`)
 - **Mitigação:**
-    - Banner do plugin core (FDD 35) e prazos de 30 min e 12 h
-    - `Revoke` disponível para uma decisão futura
-- **Plano de contingência:** cortar sessões de leitura quando o core vira `failed`, numa minor, se a revisão pedir (H-13)
+    - Decisão consciente do responsável (2026-10-22), para que dados que o core não garante não fiquem à vista de sessões de leitura
+    - Aviso de emergência na página de login e banner do plugin core (FDD 35); o root segue com a visão completa
+    - `Store.Revoke` por papel e métrica `panel_sessions_ended_total{reason="core_state"}`
+- **Plano de contingência:** se a operação mostrar cortes demais por oscilação, trocar para suspensão por requisição ou histerese numa minor

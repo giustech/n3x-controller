@@ -12,4 +12,4 @@ Decisões de arquitetura registradas no HLD do controller (`../HLD.md`). A numer
 | [ADR-006](ADR-006-sessao-do-painel-em-memoria.md) | Sessão do painel só em memória | Aceito (atualizado em 2026-10-20) |
 | [ADR-007](ADR-007-grpc-so-para-sidecars.md) | Servidor gRPC só para sidecars na v1 | Aceito |
 | [ADR-008](ADR-008-polling-e-cartoes.md) | Painel com polling de 5 s e visão geral por cartões | Aceito |
-| [ADR-009](ADR-009-subcomandos-do-controller.md) | Subcomandos do binário do controller | Aceito |
+| [ADR-009](ADR-009-subcomandos-do-controller.md) | Subcomandos do binário do controller | Aceito (atualizado em 2026-10-22) |

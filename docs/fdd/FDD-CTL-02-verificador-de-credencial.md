@@ -53,6 +53,11 @@ flowchart LR
 - ADRs: ADR-002, ADR-004 e ADR-005 do `n3x-controller`; ADR-019 e ADR-020 do `n3x-sdk`; ADR-004 do `n3x-plugin-core` (efeito da `session.hmac_key` no volume de logins)
 - FDDs: 03 (`plugin.Secret`, `secret.Wipe`), 08 (`Caller` zero na tabela pública, prazo da chamada), 09 (contrato 14 `CredentialVerifier`, contrato 17 sentinelas e mensagens; pedidos "`Verify` com `plugin.Secret` e `netip.Addr`" e "IP zero com balde próprio"), 12 (`FakeCredentials`, `hostconformance.RunCoreEnv`, P-10), 30 (`File.Services`, `File.GRPC.Login`, faixas, `boot.Deps`, P-02), 36 (`LoginRequest.secret` de 1 a 1.024 bytes), 38 (login com 10 s, backoff da conexão)
 - Lacunas do README aplicadas: L-02 (IP do chamador, decidida na FDD 09) e L-39 (prefixos bcrypt `$2a$`, `$2b$` e `$2y$`, decidida na FDD 30). Nenhuma lacuna é atribuída a esta FDD
+- Decisões da clarificação (responsável, 2026-10-22):
+  - Bloqueio com dois contadores independentes (IP e serviço, este por IPs distintos), e não um contador por par (IP, serviço) como no modelo de dados do HLD (I-01); o HLD será ajustado no WORKFLOW 3
+  - Com o serviço bloqueado, o acerto de cache passa (I-02); só o caminho que gastaria bcrypt é fechado; o texto "IP ou serviço bloqueado" do HLD será ajustado
+  - `bcrypt_queue` e `bcrypt_wait` são campos configuráveis do `n3x.yaml`, com o aviso `login_wait_exceeds_call_timeout`; o schema da CTL-01 (contrato 4, `GRPCLogin`) e o HLD precisam recebê-los (WORKFLOW 3)
+  - Hipóteses menores aprovadas em bloco: as 9 métricas novas da seção 7, segredo vazio ou acima de 72 bytes como falha sem bcrypt, tabela de 16.384 IPs com balde `overflow`, IPv6 contado pelo endereço inteiro (P-05) e hash de referência do serviço desconhecido (passo 4 da montagem)
 - Ponto em aberto de FDD anterior fechado aqui: P-02 da FDD 30 (campos de fila e faixas de `grpc.login`) e P-10 da FDD 12 (a regra de contagem continua no host; o falso do kit não muda)
 
 ---
@@ -103,20 +108,20 @@ flowchart LR
 1. `host.Run` termina as etapas 0 a 4 (config, manifesto, chave, TLS) e abre a `17091`.
 2. `credential.New(deps)` copia os hashes de `deps.Config.File.Services` (já validados pela FDD 30) e os valores de `deps.Config.File.GRPC.Login`.
 3. Gera a chave do cache com 32 bytes de `crypto/rand`; falha de leitura do gerador devolve erro e a montagem sai com 8 (`internal_error`).
-4. Escolhe o hash de referência para serviço desconhecido: o `secret_hash` do primeiro serviço em ordem de bytes do nome; sem nenhum serviço, gera um hash de custo `config.MinBcryptCost` (12) sobre 32 bytes aleatórios, uma vez (cerca de 250 ms na subida, só quando `services` está vazio, caso já avisado com `no_services` pela FDD 30) (hipótese).
+4. Escolhe o hash de referência para serviço desconhecido: o `secret_hash` do primeiro serviço em ordem de bytes do nome; sem nenhum serviço, gera um hash de custo `config.MinBcryptCost` (12) sobre 32 bytes aleatórios, uma vez (cerca de 250 ms na subida, só quando `services` está vazio, caso já avisado com `no_services` pela FDD 30) (aprovado em 2026-10-22).
 5. Registra as métricas em `deps.Registry`; nome repetido devolve erro (saída 8, regra da FDD 30). A família compartilhada `n3x_controller_login_blocked_total{kind}` vem pronta do `boot` (pedido à FDD 30) e o verificador usa só `kind="sidecar"`.
 6. Loga `credential_verifier_ready` com os valores efetivos e, se `bcrypt_concurrency` passar de `GOMAXPROCS`, o aviso `credential_warning` com `code=bcrypt_concurrency_high`.
 7. O host de plugins (FDD 32) recebe o `*Verifier` e o devolve em `CoreEnv.Credentials()`.
 
 **Fluxo principal: `Verify(ctx, serviço, segredo, ip)`**
 1. **Prazo.** Se `ctx.Err() != nil`, devolve `ctx.Err()` sem tocar em nada.
-2. **Chave do IP.** IPv4 mapeado em IPv6 vira IPv4 (`Unmap`); IP zero (sem IP conhecido) vira o balde `unknown` (pedido da FDD 09); IPv6 conta pelo endereço inteiro (hipótese; P-05).
+2. **Chave do IP.** IPv4 mapeado em IPv6 vira IPv4 (`Unmap`); IP zero (sem IP conhecido) vira o balde `unknown` (pedido da FDD 09); IPv6 conta pelo endereço inteiro (P-05, aprovado em 2026-10-22).
 3. **Serviço.** Procura `serviço` no mapa de hashes. Ausente: o chamador é tratado como "desconhecido", com rótulo e campo de log `_unknown` (o `_` inicial não cabe na gramática de `services`, então nunca colide); o nome recebido nunca é guardado nem logado.
 4. **IP bloqueado.** Se a entrada própria do IP está bloqueada, devolve `ctrl.ErrLoginBlocked` sem cache e sem bcrypt (ordem do HLD). Conta `logins_total{result="blocked"}` e `login_blocked_total{kind="sidecar"}`. Um IP sem entrada própria com o balde `overflow` bloqueado não para aqui: a recusa dele fica para o passo 8, depois do cache (fluxo de transbordo).
 5. **Tamanho do segredo.** Vazio ou acima de 72 bytes (limite do bcrypt; o `credential new` gera 43): falha sem bcrypt, contada como as demais (passo 10), e devolve `ctrl.ErrInvalidCredentials`. O valor nunca chega a `Compare`.
 6. **HMAC.** Copia o segredo para um buffer de 72 bytes na pilha e calcula `mac = HMAC-SHA256(chave do processo, nomeDoServiço || 0x00 || segredo)` com um `hash.Hash` reaproveitado de um `sync.Pool`; o buffer é zerado com `secret.Wipe` ao fim da chamada.
 7. **Cache (só serviço conhecido).** Se há entrada do serviço não expirada e `hmac.Equal(entrada.mac, mac)`, devolve `nil` sem bcrypt; conta `credential_cache_hits_total` e `logins_total{result="ok"}` e aplica o efeito do sucesso (passo 11). O acerto não estende o prazo da entrada.
-8. **Serviço ou transbordo bloqueado.** Se o serviço é conhecido e o contador dele está bloqueado, ou se o IP não tem entrada própria e o balde `overflow` está bloqueado, devolve `ctrl.ErrLoginBlocked` sem bcrypt. Quem acertou o cache já saiu no passo 7: esses dois bloqueios só fecham o caminho que gastaria CPU (hipótese; I-02).
+8. **Serviço ou transbordo bloqueado.** Se o serviço é conhecido e o contador dele está bloqueado, ou se o IP não tem entrada própria e o balde `overflow` está bloqueado, devolve `ctrl.ErrLoginBlocked` sem bcrypt. Quem acertou o cache já saiu no passo 7: esses dois bloqueios só fecham o caminho que gastaria CPU (I-02, decisão do responsável em 2026-10-22).
 9. **Deduplicação e fila.** Procura uma verificação em andamento com a chave (serviço ou `_unknown`, `mac`):
    - existe: a chamada vira seguidora e espera o resultado com o próprio `ctx`, sem ocupar vaga nem lugar na fila; conta `bcrypt_shared_total`
    - não existe: a chamada vira líder, registra a chave e pede vaga na fila (contrato 3). Fila cheia: `ctrl.ErrVerifierBusy` na hora (`reason=queue_full`). Sem vaga em `bcrypt_wait`: `ctrl.ErrVerifierBusy` (`reason=wait_timeout`). `ctx` vencido antes da vaga: `ctx.Err()`. Nos três casos a chave sai do mapa e as seguidoras recebem `ctrl.ErrVerifierBusy`; nada é contado como falha
@@ -386,8 +391,8 @@ for s := range 50 { for p := range 10 { go v.Verify(ctx, nome(s), plugin.NewSecr
   - **Janela:** fixa, começa na primeira falha e dura `lockout` (15 min); vencida sem bloqueio, a entrada some. Com `max_failures: 5` e `lockout: 15m`, são 5 falhas em 15 min (H-03)
   - **Bloqueio:** começa na falha que atinge o limite e dura `lockout` contado dali; tentativas durante o bloqueio não o estendem (um atacante não prende o serviço para sempre só insistindo; o próprio IP dele continua bloqueado pelo contador por IP); terminado o bloqueio, a entrada some e a contagem recomeça do zero
   - **Sucesso:** apaga a entrada do IP que acertou e o conjunto de falhas do serviço, se não estiverem bloqueados; não encerra um bloqueio ativo
-  - **Por que o serviço conta IPs distintos** (hipótese; resposta ao risco novo do ASSUNTO): com falhas simples, um único IP com 5 tentativas bloquearia o login do serviço inteiro para todos os pods depois de um restart. Contando IPs distintos, o atacante precisa de `max_failures` IPs na janela, e cada um deles bloqueia sozinho depois de `max_failures` falhas. A força bruta distribuída num segredo fraco escrito à mão continua barrada: com qualquer número de IPs, são no máximo 21 tentativas por janela (5 falhas em cada um de 4 IPs e a primeira do quinto) antes de o serviço fechar o caminho com bcrypt
-  - **Leitura de "por IP e por serviço"** (ADR-004, FR-005): dois contadores independentes, não um contador por par (IP, serviço) como sugere o modelo de dados do HLD (I-01). O par não protege contra um IP que varre 1.024 serviços (5.120 bcrypt a cada 15 min, cerca de 21 min de CPU)
+  - **Por que o serviço conta IPs distintos** (decisão do responsável em 2026-10-22; resposta ao risco novo do ASSUNTO): com falhas simples, um único IP com 5 tentativas bloquearia o login do serviço inteiro para todos os pods depois de um restart. Contando IPs distintos, o atacante precisa de `max_failures` IPs na janela, e cada um deles bloqueia sozinho depois de `max_failures` falhas. A força bruta distribuída num segredo fraco escrito à mão continua barrada: com qualquer número de IPs, são no máximo 21 tentativas por janela (5 falhas em cada um de 4 IPs e a primeira do quinto) antes de o serviço fechar o caminho com bcrypt
+  - **Leitura de "por IP e por serviço"** (ADR-004, FR-005): dois contadores independentes, não um contador por par (IP, serviço) como sugere o modelo de dados do HLD (I-01; a leitura da FDD foi aprovada em 2026-10-22 e o HLD será ajustado). O par não protege contra um IP que varre 1.024 serviços (5.120 bcrypt a cada 15 min, cerca de 21 min de CPU)
   - **Vazamento residual:** um serviço conhecido bloqueado responde `RESOURCE_EXHAUSTED` e um nome desconhecido nunca bloqueia pelo serviço; descobrir isso custa `max_failures` IPs por nome testado. Os nomes de serviço não são tratados como segredo (aparecem no inventário e no DNS); a resposta a uma tentativa comum continua igual
 
 **Exemplo de requisição**
@@ -419,8 +424,8 @@ err := v.Verify(ctx, "pedidos", plugin.NewSecret(segredoCerto), netip.MustParseA
 | `max_failures` | inteiro | `5` | 1 a 100 | limite de falhas por IP e de IPs distintos por serviço, na janela | confirmado (FDD 30) |
 | `lockout` | duração | `15m` | 1m a 24h | duração da janela de contagem e do bloqueio | confirmado (FDD 30) |
 | `bcrypt_concurrency` | inteiro | `2` | 1 a 16 | comparações bcrypt simultâneas no processo; acima de `GOMAXPROCS` avisa | confirmado (FDD 30) |
-| `bcrypt_queue` | inteiro | `16` | 0 a 1024 | chamadas esperando vaga; 0 desliga a espera | novo (hipótese; pedido à FDD 30) |
-| `bcrypt_wait` | duração | `5s` | 100ms a 30s | prazo máximo de espera por vaga; acima ou igual a `runtime.plugin_call_timeout`, a FDD 30 avisa `login_wait_exceeds_call_timeout` | novo (hipótese; pedido à FDD 30) |
+| `bcrypt_queue` | inteiro | `16` | 0 a 1024 | chamadas esperando vaga; 0 desliga a espera | novo (aprovado em 2026-10-22; falta incluir no schema da FDD 30 e no HLD) |
+| `bcrypt_wait` | duração | `5s` | 100ms a 30s | prazo máximo de espera por vaga; acima ou igual a `runtime.plugin_call_timeout`, a FDD 30 avisa `login_wait_exceeds_call_timeout` | novo (aprovado em 2026-10-22; falta incluir no schema da FDD 30 e no HLD) |
 | `verified_cache_ttl` | duração | `1h` | 1m a 24h | vida da entrada de cache depois do bcrypt que a criou | confirmado (FDD 30) |
 
   - A struct `config.GRPCLogin` ganha `BcryptQueue int` (`n3x:"min=0,max=1024" default:"16"`) e `BcryptWait time.Duration` (`n3x:"min=100ms,max=30s" default:"5s"`), com os códigos de regra da FDD 02 (`type`, `min`, `max`)
@@ -569,7 +574,7 @@ n3x_controller_login_tracked_ips 3
 
 ### 7. Observabilidade
 
-**Métricas** (registradas em `Deps.Registry`, servidas na `17091`; as quatro primeiras são do HLD do `n3x-controller`, as demais são novas, hipótese)
+**Métricas** (registradas em `Deps.Registry`, servidas na `17091`; as quatro primeiras são do HLD do `n3x-controller`, as demais são novas e foram aprovadas em 2026-10-22; o HLD será atualizado)
 
 | Métrica | Tipo | Rótulos | Significado |
 | --- | --- | --- | --- |
