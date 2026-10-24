@@ -40,7 +40,19 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+Derived from `.specify/memory/constitution.md` v1.0.0. Each gate MUST be answered pass / violation (justify violations in Complexity Tracking):
+
+- [ ] I. No storage added to the host (state in memory or inside a plugin; config only from file)
+- [ ] II. Behavior delivered as plugin/SDK contract; only the core uses `CoreEnv`; core never imports `host/`
+- [ ] III. Controller stays observe-only and off the traffic path
+- [ ] IV. AuthN/AuthZ in the host before plugin handlers; TLS 1.3; namespaces checked at boot
+- [ ] V. recover + deadline on every plugin call; `failed` rules respected
+- [ ] VI. Fail-fast boot with path, code `N3X-C0xx` and fix hint; exit codes unchanged
+- [ ] VII. No secret in log/metric/error/HTML; `secrettest.Leaks` canary planned (NON-NEGOTIABLE)
+- [ ] VIII. Impact on 500 sidecars / 1 vCPU / 512 MiB and panel p95 < 300 ms assessed
+- [ ] IX. Only additive changes to schema v1, codes, metrics, protos, `host` package
+- [ ] X. Panel: WCAG 2.1 AA, CSP `'self'`, no plugin-written HTML
+- [ ] Tests first (TDD), coverage 85% / 90% critical, CI gates, hexagonal ports, PT-BR docs
 
 ## Project Structure
 
